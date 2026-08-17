@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Options — Clefkey.</title>
+  <link rel="stylesheet" href="options.css" />
+</head>
+<body>
+  <main class="page">
+    <header class="brand">
+      <img class="brand-logo" src="../icons/icon-48.png" alt="" width="36" height="36" />
+      <div>
+        <h1>Clefkey.</h1>
+        <p>Préférences de l'extension navigateur.</p>
+      </div>
+    </header>
+
+    <form id="form-options" class="card" autocomplete="off">
+      <fieldset>
+        <legend>Serveur</legend>
+        <label class="field">
+          <span class="field-label">URL du serveur Clefkey</span>
+          <input id="opt-server-url" type="url" name="serverUrl"
+                 placeholder="https://votre-domaine.vercel.app" required />
+          <span class="field-hint">La permission d'accès au serveur est demandée automatiquement lors de l'enregistrement.</span>
+        </label>
+        <div class="field-actions">
+          <button id="btn-test" class="btn" type="button">Tester la connexion</button>
+          <span id="test-result" class="test-result" role="status"></span>
+        </div>
+      </fieldset>
+
+      <fieldset>
+        <legend>Verrouillage</legend>
+        <label class="field">
+          <span class="field-label">Auto-verrouillage (minutes)</span>
+          <input id="opt-autolock" type="number" name="autoLockMinutes" min="0" max="120" step="1" />
+          <span class="field-hint">0 = verrouillage uniquement à la fermeture du navigateur.</span>
+        </label>
+      </fieldset>
+
+      <fieldset>
+        <legend>Apparence</legend>
+        <label class="field">
+          <span class="field-label">Thème</span>
+          <select id="opt-theme" name="theme">
+            <option value="auto">Automatique</option>
+            <option value="dark">Sombre</option>
+            <option value="light">Clair</option>
+          </select>
+        </label>
+      </fieldset>
+
+      <div class="form-actions">
+        <button id="btn-save" class="btn btn-primary" type="submit">Enregistrer</button>
+        <span id="save-result" class="save-result" role="status"></span>
+      </div>
+    </form>
+
+    <p class="foot">Les secrets ne sont jamais enregistrés ici : seule la configuration est stockée en local.</p>
+  </main>
+
+  <script type="module" src="options.js"></script>
+</body>
+</html>

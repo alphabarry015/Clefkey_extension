@@ -1,0 +1,12 @@
+# Dépendances & artefacts de build
+node_modules/
+dist/
+
+# Env / secrets
+.env
+.env.*
+!.env.example
+
+# Système
+.DS_Store
+Thumbs.db

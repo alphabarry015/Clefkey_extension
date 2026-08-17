@@ -1,0 +1,344 @@
+/* Background — service worker (MV3, module).
+ *
+ * Détient la session déverrouillée (clés en mémoire uniquement), orchestre
+ * connexion/déverrouillage, auto-lock et persiste JWT + authMaterial dans
+ * storage.session (jamais de secret en clair).
+ */
+
+import { api } from '../lib/api.js';
+import { MSG } from '../lib/constants.js';
+import { decryptData, fromB64, prepareLogin, unlockSession } from '../lib/crypto.js';
+import { entryMatchesUrl, pageHostname } from '../lib/domain.js';
+import { generatePassphrase, generateSafePassword } from '../lib/generator.js';
+import {
+  getPrefs, getStoredSession, saveSession, clearSession,
+  wipeUnlockedMemory, ensureSessionAccessLevel,
+} from '../lib/session.js';
+
+/** Session déverrouillée : uniquement en mémoire du background. */
+const memory = {
+  vaultKey: null,
+  privateKey: null,
+  publicKey: null,
+  entries: [],
+  unlockedAt: 0,
+};
+
+let autoLockTimer = null;
+
+// ── Auto-lock ────────────────────────────────────────────
+
+function clearAutoLockTimer() {
+  if (autoLockTimer) {
+    clearTimeout(autoLockTimer);
+    autoLockTimer = null;
+  }
+}
+
+async function scheduleAutoLock() {
+  clearAutoLockTimer();
+  const prefs = await getPrefs();
+  const minutes = Number(prefs.autoLockMinutes);
+  if (!Number.isFinite(minutes) || minutes <= 0) return; // fermeture navigateur uniquement
+  const delay = minutes * 60 * 1000;
+  autoLockTimer = setTimeout(() => {
+    autoLockTimer = null;
+    softLock('idle');
+  }, delay);
+}
+
+function softLock(reason = 'idle') {
+  clearAutoLockTimer();
+  wipeUnlockedMemory(memory);
+  void reason;
+}
+
+// ── Utilitaires ──────────────────────────────────────────
+
+function userFromProfile(data) {
+  return {
+    email: data.email,
+    first_name: data.first_name || '',
+    middle_name: data.middle_name || '',
+    last_name: data.last_name || '',
+  };
+}
+
+function normalizeUser(user) {
+  if (!user || typeof user !== 'object') return null;
+  return {
+    email: user.email || '',
+    first_name: user.first_name || '',
+    middle_name: user.middle_name || '',
+    last_name: user.last_name || '',
+  };
+}
+
+function isUnlocked() {
+  return Boolean(memory.vaultKey);
+}
+
+function authMaterialFromPayload(payload) {
+  if (!payload?.salt || !payload?.encrypted_vault_key) return null;
+  return {
+    salt: payload.salt,
+    encrypted_vault_key: payload.encrypted_vault_key,
+    encrypted_private_key: payload.encrypted_private_key || null,
+    public_key: payload.public_key || null,
+  };
+}
+
+async function currentPrefs() {
+  return getPrefs();
+}
+
+// ── Actions ──────────────────────────────────────────────
+
+async function doUnlock({ email, master, autoRelock = true }) {
+  if (!master) throw new Error('Mot de passe maître requis.');
+  const prefs = await getPrefs();
+  const apiBase = prefs.serverUrl;
+  const stored = await getStoredSession();
+
+  let token;
+  let user;
+  let authMaterial;
+
+  if (stored && stored.authMaterial) {
+    // Verrouillage : le sel est connu, on redérive localement.
+    const keys = await unlockSession(stored.authMaterial, master);
+    token = stored.token;
+    user = stored.user;
+    authMaterial = stored.authMaterial;
+    Object.assign(memory, keys, { entries: [], unlockedAt: Date.now() });
+  } else {
+    if (!email) throw new Error('Email requis.');
+    const prepared = await prepareLogin(email, master, apiBase);
+    const data = await api.login(apiBase, email, prepared.authVerifier);
+    const keys = await unlockSession(data, master, {
+      derivedKey: prepared.derived,
+      saltB64: prepared.saltB64,
+    });
+    token = data.access_token;
+    user = userFromProfile(data);
+    authMaterial = authMaterialFromPayload(data);
+    Object.assign(memory, keys, { entries: [], unlockedAt: Date.now() });
+  }
+
+  await saveSession({
+    token,
+    user: normalizeUser(user),
+    authMaterial,
+    lastActivity: Date.now(),
+  });
+  if (autoRelock) await scheduleAutoLock();
+  return { ok: true, user: normalizeUser(user) };
+}
+
+async function doLock() {
+  softLock('manual');
+  return { ok: true };
+}
+
+async function doLogout() {
+  clearAutoLockTimer();
+  wipeUnlockedMemory(memory);
+  await clearSession();
+  return { ok: true };
+}
+
+async function requireEntriesLoaded() {
+  if (memory.entries.length > 0) return memory.entries;
+  if (!isUnlocked()) throw { code: 'NOT_UNLOCKED', message: 'Extension verrouillée.' };
+  const prefs = await getPrefs();
+  const stored = await getStoredSession();
+  if (!stored?.token) throw { code: 'NOT_UNLOCKED', message: 'Session invalide.' };
+  try {
+    const blobs = await api.getEntries(prefs.serverUrl, stored.token);
+    const raw = Array.isArray(blobs) ? blobs : [];
+    const decrypted = [];
+    for (const e of raw) {
+      try {
+        const data = await decryptData(fromB64(e.encrypted_data), memory.vaultKey);
+        if (data && typeof data === 'object' && data.type !== 'vault_meta') {
+          decrypted.push({
+            id: e.id,
+            title: data.title || '',
+            type: data.type || 'login',
+            username: data.username || '',
+            password: data.password || '',
+            notes: data.notes || '',
+            url: data.url || '',
+            created_at: e.created_at || '',
+            updated_at: e.updated_at || '',
+          });
+        }
+      } catch {
+        // Blob indéchiffrable (ancien, autre appareil) → ignoré.
+      }
+    }
+    memory.entries = decrypted;
+    await scheduleAutoLock();
+    return memory.entries;
+  } catch (err) {
+    if (err && (err.status === 401 || err.status === 403)) {
+      await doLogout();
+      throw { code: 'NOT_UNLOCKED', message: 'Session expirée, reconnectez-vous.' };
+    }
+    throw err;
+  }
+}
+
+async function doGetEntries() {
+  const entries = await requireEntriesLoaded();
+  return { ok: true, entries };
+}
+
+async function doGetEntriesForDomain(url) {
+  const entries = await requireEntriesLoaded();
+  const matches = entries.filter(
+    (e) => e.type === 'login' && e.username && entryMatchesUrl(e, url),
+  );
+  return {
+    ok: true,
+    hostname: pageHostname(url),
+    entries: matches.map((e) => ({
+      id: e.id,
+      title: e.title,
+      username: e.username,
+      password: e.password,
+      url: e.url,
+    })),
+  };
+}
+
+async function sendFillToTab(tabId, entry) {
+  const payload = {
+    type: 'ck-fill',
+    entry: { username: entry.username, password: entry.password },
+  };
+  try {
+    await chrome.tabs.sendMessage(tabId, payload);
+    return;
+  } catch {
+    // Pas de content script actif (page ouverte avant le chargement/rechargement
+    // de l'extension) : on injecte dans la frame principale puis on renvoie.
+    // L'injection est idempotente (drapeau window.__clefkeyReady dans le monde
+    // isolé) : relancer le script sur un onglet déjà équipé ne duplique rien.
+  }
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId, frameIds: [0] },
+      files: ['content/content.js'],
+    });
+  } catch {
+    throw {
+      code: 'NO_CONTENT',
+      message: 'Impossible de remplir cette page (sites restreints).',
+    };
+  }
+  try {
+    await chrome.tabs.sendMessage(tabId, payload);
+  } catch {
+    throw {
+      code: 'NO_CONTENT',
+      message: 'Impossible de remplir cette page (page non rechargée).',
+    };
+  }
+}
+
+async function doFillActiveTab({ entryId, tabId, url }) {
+  const entries = await requireEntriesLoaded();
+  const entry = entries.find(
+    (e) => e.id === entryId && e.type === 'login' && entryMatchesUrl(e, url || ''),
+  );
+  if (!entry) throw { code: 'NOT_FOUND', message: 'Aucun identifiant correspondant.' };
+  if (!Number.isInteger(tabId)) throw { code: 'ERROR', message: 'Onglet invalide.' };
+  try {
+    await sendFillToTab(tabId, entry);
+  } catch {
+    throw {
+      code: 'NO_CONTENT',
+      message: 'Impossible de remplir cette page (sites restreints ou page non rechargée).',
+    };
+  }
+  return { ok: true };
+}
+
+async function doGeneratePassword({ length }) {
+  try {
+    const password = await generateSafePassword({ length: Number(length) || 20 });
+    return { ok: true, password };
+  } catch (err) {
+    throw { code: 'GEN_ERROR', message: (err && err.message) || 'Génération impossible.' };
+  }
+}
+
+async function doGeneratePassphrase({ count }) {
+  return { ok: true, passphrase: generatePassphrase(count || 5) };
+}
+
+// ── État ─────────────────────────────────────────────────
+
+async function getState() {  const [prefs, stored] = await Promise.all([getPrefs(), getStoredSession()]);
+  return {
+    ok: true,
+    locked: !isUnlocked(),
+    hasSession: Boolean(stored),
+    user: normalizeUser(stored?.user || null),
+    email: (stored?.user?.email) || null,
+    serverUrl: prefs.serverUrl,
+    autoLockMinutes: Number(prefs.autoLockMinutes) || 0,
+  };
+}
+
+// ── Message routing ──────────────────────────────────────
+
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (!message || typeof message.type !== 'string') return false;
+  // Seuls les messages de notre propre extension sont acceptés (popup, options,
+  // content scripts). Une autre extension ne doit pouvoir ni lire les entrées
+  // déchiffrées, ni déverrouiller/verrouiller la session.
+  if (!sender || sender.id !== chrome.runtime.id) return false;
+  const handle = (promise) => {
+    promise.then(sendResponse, (err) => {
+      const code = err && err.code ? err.code : (err && err.status ? `HTTP_${err.status}` : 'ERROR');
+      sendResponse({ ok: false, code, message: (err && err.message) || 'Erreur inconnue.' });
+    });
+    return true; // réponse asynchrone
+  };
+
+  switch (message.type) {
+    case MSG.GET_STATE:
+      return handle(getState());
+    case MSG.UNLOCK:
+      return handle(doUnlock(message));
+    case MSG.LOCK:
+      return handle(doLock());
+    case MSG.LOGOUT:
+      return handle(doLogout());
+    case MSG.GET_ENTRIES:
+      return handle(doGetEntries());
+    case MSG.GET_ENTRIES_FOR_DOMAIN:
+      return handle(doGetEntriesForDomain(message.url));
+    case MSG.FILL_ACTIVE_TAB:
+      return handle(doFillActiveTab(message));
+    case MSG.GENERATE_PASSWORD:
+      return handle(doGeneratePassword(message));
+    case MSG.GENERATE_PASSPHRASE:
+      return handle(doGeneratePassphrase(message));
+    default:
+      return false;
+  }
+});
+
+// ── Init ─────────────────────────────────────────────────
+
+ensureSessionAccessLevel().catch(() => {});
+chrome.runtime.onStartup.addListener(() => {
+  // storage.session est déjà vide après un redémarrage du navigateur.
+  softLock('browser_close');
+});
+chrome.runtime.onInstalled.addListener(() => {
+  softLock('installed');
+});

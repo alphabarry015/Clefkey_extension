@@ -1,0 +1,60 @@
+{
+  "manifest_version": 3,
+  "name": "Clefkey — Gestionnaire de mots de passe",
+  "short_name": "Clefkey",
+  "version": "0.1.0",
+  "description": "Autofill, générateur et capture d'identifiants pour le coffre Clefkey. Client du serveur, aucune donnée en clair ne transite.",
+  "permissions": [
+    "storage",
+    "activeTab",
+    "scripting"
+  ],
+  "host_permissions": [
+    "https://*.vercel.app/*",
+    "https://api.pwnedpasswords.com/*"
+  ],
+  "optional_host_permissions": [
+    "http://localhost:8000/*",
+    "http://127.0.0.1:8000/*"
+  ],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'"
+  },
+  "background": {
+    "scripts": ["background/background.js"],
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": ["http://*/*", "https://*/*"],
+      "js": ["content/content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_title": "Clefkey.",
+    "default_popup": "popup/popup.html",
+    "default_icon": {
+      "16": "icons/icon-16.png",
+      "32": "icons/icon-32.png",
+      "48": "icons/icon-48.png",
+      "128": "icons/icon-128.png"
+    }
+  },
+  "options_ui": {
+    "page": "options/options.html",
+    "open_in_tab": true
+  },
+  "icons": {
+    "16": "icons/icon-16.png",
+    "32": "icons/icon-32.png",
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
+  },
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "clefkey-extension@clefkey.app",
+      "strict_min_version": "121.0"
+    }
+  }
+}
