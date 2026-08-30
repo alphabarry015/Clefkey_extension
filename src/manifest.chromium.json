@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Clefkey. Gestionnaire de mots de passe",
   "short_name": "Clefkey",
-  "version": "0.1.0",
+  "version": "0.1.2",
   "description": "Remplissez vos identifiants et générez des mots de passe. Vos secrets restent sur votre appareil.",
   "permissions": [
     "storage",
@@ -23,8 +23,10 @@
   "content_scripts": [
     {
       "matches": ["http://*/*", "https://*/*"],
+      "exclude_matches": ["https://clefkey.vercel.app/*"],
       "js": ["content/content.js"],
-      "run_at": "document_idle"
+      "run_at": "document_idle",
+      "all_frames": false
     }
   ],
   "action": {

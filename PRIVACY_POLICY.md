@@ -32,8 +32,9 @@ appareil.
 
 ## 4. Données stockées par l'extension
 
-- **Préférences** (URL du serveur, durée d'auto-verrouillage, thème) : stockées
-  dans `chrome.storage.local`. Aucune donnée sensible.
+- **Préférences** (durée d'auto-verrouillage, thème) : stockées
+  dans `chrome.storage.local`. Aucune donnée sensible. L'URL du coffre est
+  figée (`https://clefkey.vercel.app`).
 - **Session** (jeton d'authentification et blobs **chiffrés**) : stockés dans
   `chrome.storage.session`, une zone de stockage effacée à la fermeture du
   navigateur et inaccessible aux scripts de contenu. Aucun secret n'est
@@ -41,7 +42,7 @@ appareil.
 
 ## 5. Transmissions réseau
 
-- **Serveur Clefkey** (URL configurée dans les Options, en HTTPS) : l'extension
+- **Serveur Clefkey** (`https://clefkey.vercel.app`, HTTPS) : l'extension
   transmet uniquement
   - le jeton d'authentification (session), et
   - des **blobs chiffrés** (jamais d'identifiants en clair),
@@ -58,9 +59,8 @@ appareil.
 |---|---|
 | `storage` | Enregistrer vos préférences et la session chiffrée. |
 | `activeTab` + `scripting` | Injecter le remplissage automatique dans le formulaire actif, **uniquement sur votre demande explicite**. |
-| Accès hôte au serveur Clefkey (`https://*.vercel.app/*`) | Communiquer avec votre coffre (HTTPS uniquement). |
-| Accès hôte à `api.pwnedpasswords.com` | Vérification anti-fuite des mots de passe générés. |
-| Accès hôte optionnel `localhost` | Développement local uniquement ; demandé à la volée, jamais installé par défaut. |
+| Accès hôte au serveur Clefkey (`https://clefkey.vercel.app/*`) | Communiquer avec votre coffre (HTTPS uniquement). |
+| Accès hôte à `api.pwnedpasswords.com` | Vérification anti-fuite des mots de passe générés (empreinte partielle SHA-1 uniquement). |
 
 ## 7. Remplissage automatique
 

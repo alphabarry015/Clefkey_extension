@@ -6,6 +6,7 @@
  */
 
 import { argon2id } from '../vendor/hash-wasm.esm.min.js';
+import { fetchWithTimeout } from './http.js';
 
 const SALT_SIZE = 16;
 const NONCE_SIZE = 12;
@@ -33,7 +34,14 @@ export function toB64(bytes) {
 }
 
 export function fromB64(b64) {
-  return Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+  if (typeof b64 !== 'string' || !b64) {
+    throw new Error('Données de chiffrement invalides.');
+  }
+  try {
+    return Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+  } catch {
+    throw new Error('Données de chiffrement invalides.');
+  }
 }
 
 function toBuffer(u8) {
@@ -131,26 +139,6 @@ export function generateVaultKey() {
   return crypto.getRandomValues(new Uint8Array(32));
 }
 
-// ── Générateur de mots de passe ──────────────────────────
-
-const PASSWORD_CHARS = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*';
-
-export function generatePassword(length = 20) {
-  const n = Math.max(12, Math.min(64, Number(length) || 20));
-  const maxUnbiased = 256 - (256 % PASSWORD_CHARS.length);
-  let out = '';
-  while (out.length < n) {
-    const buf = new Uint8Array(n - out.length + 8);
-    crypto.getRandomValues(buf);
-    for (const b of buf) {
-      if (b >= maxUnbiased) continue;
-      out += PASSWORD_CHARS[b % PASSWORD_CHARS.length];
-      if (out.length >= n) break;
-    }
-  }
-  return out;
-}
-
 // ── Connexion & déverrouillage ───────────────────────────
 
 /**
@@ -160,9 +148,9 @@ export function generatePassword(length = 20) {
 export async function prepareLogin(email, masterPassword, apiBase) {
   let resp;
   try {
-    resp = await fetch(`${apiBase}/auth/salt?email=${encodeURIComponent(email)}`);
-  } catch {
-    throw new Error('Impossible de joindre Clefkey. Vérifiez votre connexion.');
+    resp = await fetchWithTimeout(`${apiBase}/auth/salt?email=${encodeURIComponent(email)}`);
+  } catch (err) {
+    throw new Error((err && err.message) || 'Impossible de joindre Clefkey. Vérifiez votre connexion.');
   }
   if (!resp.ok) {
     let detail = '';

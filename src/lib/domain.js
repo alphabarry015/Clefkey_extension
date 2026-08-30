@@ -88,19 +88,43 @@ export function domainFromUrl(url) {
   }
 }
 
+function hostnameOf(url) {
+  const normalized = normalizeEntryUrl(url);
+  if (!normalized) return '';
+  try {
+    return new URL(normalized).hostname.toLowerCase().replace(/^www\./, '');
+  } catch {
+    return '';
+  }
+}
+
+function isIpHostname(hostname) {
+  const h = String(hostname || '').replace(/^\[|\]$/g, '');
+  if (/^\d{1,3}(?:\.\d{1,3}){3}$/.test(h)) return true;
+  return h.includes(':');
+}
+
+function isPublicSuffix(domain) {
+  return SINGLE_SUFFIXES.has(domain) || MULTI_SUFFIXES.has(domain);
+}
+
 /**
  * Une entrée du coffre correspond-elle à la page active ?
- * Match sur le domaine registrable (exact ou sous-domaine).
+ * Comparaison sur le domaine registrable uniquement (pas de suffixe trop large).
  */
 export function entryMatchesUrl(entry, pageUrl) {
   if (!entry || typeof entry.url !== 'string') return false;
-  const entryDomain = domainFromUrl(entry.url);
-  const pageDomain = domainFromUrl(pageUrl);
+  const entryHost = hostnameOf(entry.url);
+  const pageHost = hostnameOf(pageUrl);
+  if (!entryHost || !pageHost) return false;
+  if (isIpHostname(entryHost) || isIpHostname(pageHost)) {
+    return entryHost === pageHost;
+  }
+  const entryDomain = registrableDomain(entryHost);
+  const pageDomain = registrableDomain(pageHost);
   if (!entryDomain || !pageDomain) return false;
-  if (entryDomain === pageDomain) return true;
-  if (entryDomain.endsWith(`.${pageDomain}`)) return true; // entrée en sous-domaine de la page
-  if (pageDomain.endsWith(`.${entryDomain}`)) return true; // page en sous-domaine de l'entrée
-  return false;
+  if (isPublicSuffix(entryDomain) || isPublicSuffix(pageDomain)) return false;
+  return entryDomain === pageDomain;
 }
 
 /** Extrait le hostname de la page pour l'UI. */

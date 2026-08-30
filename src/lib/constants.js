@@ -15,9 +15,6 @@ export const PREFS_DEFAULTS = {
   theme: 'auto', // 'auto' | 'light' | 'dark'
 };
 
-/** Verrouillage « à la fermeture du navigateur » (storage.session s'efface seul). */
-export const LOCK_ON_BROWSER_CLOSE = 0;
-
 export const MSG = {
   GET_STATE: 'get-state',
   UNLOCK: 'unlock',
@@ -34,6 +31,19 @@ export const MSG = {
   DISMISS_CAPTURE: 'dismiss-capture',
   CONFIRM_CAPTURE: 'confirm-capture',
 };
+
+/** Messages autorisés depuis un content script (le reste : pages d'extension seulement). */
+export const MSG_ALLOW_CONTENT = new Set([
+  MSG.GET_STATE,
+  MSG.GET_ENTRIES_FOR_DOMAIN,
+  MSG.FILL_ACTIVE_TAB,
+  MSG.GENERATE_PASSWORD,
+  MSG.SAVE_ENTRY,
+  MSG.OFFER_CAPTURE,
+  MSG.GET_PENDING_CAPTURE,
+  MSG.DISMISS_CAPTURE,
+  MSG.CONFIRM_CAPTURE,
+]);
 
 export const MESSAGE_ERROR = {
   NOT_UNLOCKED: 'NOT_UNLOCKED',

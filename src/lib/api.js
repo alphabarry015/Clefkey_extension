@@ -1,5 +1,7 @@
 /* Client HTTP vers l'API Clefkey (Django). Toutes les méthodes lèvent Error. */
 
+import { fetchWithTimeout } from './http.js';
+
 function formatApiError(payload, fallback) {
   if (!payload || typeof payload !== 'object') return fallback;
   const detail = payload.detail ?? payload.error ?? payload.message;
@@ -19,11 +21,15 @@ function formatApiError(payload, fallback) {
 }
 
 async function request(apiBase, path, options = {}) {
-  const headers = { 'Content-Type': 'application/json', ...options.headers };
+  const headers = { ...options.headers };
+  if (options.body && !headers['Content-Type']) {
+    headers['Content-Type'] = 'application/json';
+  }
   let resp;
   try {
-    resp = await fetch(`${apiBase}${path}`, { ...options, headers });
-  } catch {
+    resp = await fetchWithTimeout(`${apiBase}${path}`, { ...options, headers });
+  } catch (err) {
+    if (err && err.message) throw err;
     throw new Error('Impossible de joindre Clefkey. Vérifiez votre connexion.');
   }
   if (!resp.ok) {

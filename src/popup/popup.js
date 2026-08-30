@@ -1,6 +1,8 @@
 /* Popup — état, connexion, verrouillage. */
 
 import { DEFAULT_SERVER_URL, MSG } from '../lib/constants.js';
+import { send } from '../lib/messaging.js';
+import { getPrefs, savePrefs } from '../lib/session.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -12,6 +14,40 @@ const screens = {
 };
 
 let toastTimer = null;
+
+function systemTheme() {
+  return window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+}
+
+function resolvedTheme() {
+  const stored = document.documentElement.dataset.theme;
+  if (stored === 'light' || stored === 'dark') return stored;
+  return systemTheme();
+}
+
+function applyTheme(theme) {
+  const next = theme === 'light' || theme === 'dark' ? theme : systemTheme();
+  document.documentElement.dataset.theme = next;
+  document.documentElement.style.colorScheme = next;
+  const label = next === 'dark' ? 'Passer en mode clair' : 'Passer en mode sombre';
+  document.querySelectorAll('.btn-theme').forEach((btn) => {
+    btn.title = next === 'dark' ? 'Mode clair' : 'Mode sombre';
+    btn.setAttribute('aria-label', label);
+  });
+}
+
+async function initTheme() {
+  const prefs = await getPrefs();
+  applyTheme(prefs.theme === 'light' || prefs.theme === 'dark' ? prefs.theme : systemTheme());
+  document.querySelectorAll('.btn-theme').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const next = resolvedTheme() === 'dark' ? 'light' : 'dark';
+      applyTheme(next);
+      const latest = await getPrefs();
+      await savePrefs({ ...latest, theme: next });
+    });
+  });
+}
 
 function showToast(message, tone = 'info') {
   const el = $('toast');
@@ -36,23 +72,6 @@ function setBusy(button, busy, label) {
   if (busy && label) button.dataset.label = button.textContent;
   if (busy) button.textContent = label;
   else if (button.dataset.label) button.textContent = button.dataset.label;
-}
-
-function send(type, payload = {}) {
-  return new Promise((resolve) => {
-    try {
-      chrome.runtime.sendMessage({ type, ...payload }, (response) => {
-        const lastError = chrome.runtime.lastError;
-        if (lastError) {
-          resolve({ ok: false, message: lastError.message || 'Connexion interrompue.' });
-          return;
-        }
-        resolve(response || { ok: false, message: 'Aucune réponse.' });
-      });
-    } catch (err) {
-      resolve({ ok: false, message: err && err.message ? err.message : 'Connexion interrompue.' });
-    }
-  });
 }
 
 function openVault() {
@@ -221,9 +240,26 @@ $('btn-open-vault').addEventListener('click', () => openVault());
 
 // ── Générateur ───────────────────────────────────────────
 
+const CLIPBOARD_CLEAR_MS = 30000;
+let clipTimer = null;
+let clipValue = '';
+
+function scheduleClipboardClear(text) {
+  clipValue = text;
+  clearTimeout(clipTimer);
+  clipTimer = setTimeout(async () => {
+    try {
+      const now = await navigator.clipboard.readText();
+      if (now === clipValue) await navigator.clipboard.writeText('');
+    } catch { /* lecture presse-papiers indisponible */ }
+    clipValue = '';
+  }, CLIPBOARD_CLEAR_MS);
+}
+
 async function copyText(text) {
   try {
     await navigator.clipboard.writeText(text);
+    scheduleClipboardClear(text);
     return true;
   } catch {
     const ta = document.createElement('textarea');
@@ -234,7 +270,9 @@ async function copyText(text) {
     ta.select();
     let ok = false;
     try { ok = document.execCommand('copy'); } catch { ok = false; }
+    ta.value = '';
     ta.remove();
+    if (ok) scheduleClipboardClear(text);
     return ok;
   }
 }
@@ -404,4 +442,5 @@ if (!generatorBound) {
   generatorBound = true;
 }
 
+initTheme();
 refreshState();

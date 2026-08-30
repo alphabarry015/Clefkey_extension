@@ -1,7 +1,7 @@
 /* Popup Clefkey — design aligné sur les tokens du coffre (theme.css). */
 
 :root {
-  color-scheme: light dark;
+  color-scheme: dark;
   --accent: #3662D7;
   --accent-light: #5a86f0;
   --accent-hover: #2f58c8;
@@ -10,29 +10,43 @@
   --radius: 12px;
   --radius-sm: 8px;
   --font: 'Segoe UI', system-ui, sans-serif;
+  --bg-primary: #0a0a0a;
+  --bg-card: #111111;
+  --bg-elevated: #161616;
+  --bg-hover: #1c1c1c;
+  --border: rgba(255, 255, 255, 0.12);
+  --text-primary: #ffffff;
+  --text-secondary: rgba(255, 255, 255, 0.72);
+  --text-muted: rgba(255, 255, 255, 0.48);
+  --accent-glow: rgba(54, 98, 215, 0.28);
+  --accent-subtle: rgba(54, 98, 215, 0.14);
+  --error-subtle: rgba(239, 68, 68, 0.14);
+  --shadow: 0 8px 32px rgba(0, 0, 0, 0.55);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg-primary: #0a0a0a;
-    --bg-card: #111111;
-    --bg-elevated: #161616;
-    --border: rgba(255, 255, 255, 0.12);
-    --text-primary: #ffffff;
-    --text-secondary: rgba(255, 255, 255, 0.72);
-    --text-muted: rgba(255, 255, 255, 0.48);
-    --accent-glow: rgba(54, 98, 215, 0.28);
-    --accent-subtle: rgba(54, 98, 215, 0.14);
-    --error-subtle: rgba(239, 68, 68, 0.14);
-    --shadow: 0 8px 32px rgba(0, 0, 0, 0.55);
-  }
+html[data-theme="light"] {
+  color-scheme: light;
+  --bg-primary: #f0f2f7;
+  --bg-card: #ffffff;
+  --bg-elevated: #eef0f6;
+  --bg-hover: #e4e7f0;
+  --border: #d8dce8;
+  --text-primary: #1a1d26;
+  --text-secondary: #5c6378;
+  --text-muted: #8b92a5;
+  --accent-glow: rgba(54, 98, 215, 0.18);
+  --accent-subtle: rgba(54, 98, 215, 0.08);
+  --error-subtle: rgba(239, 68, 68, 0.1);
+  --shadow: 0 8px 32px rgba(0, 0, 0, 0.08);
 }
 
 @media (prefers-color-scheme: light) {
-  :root {
+  :root:not([data-theme="dark"]) {
+    color-scheme: light;
     --bg-primary: #f0f2f7;
     --bg-card: #ffffff;
     --bg-elevated: #eef0f6;
+    --bg-hover: #e4e7f0;
     --border: #d8dce8;
     --text-primary: #1a1d26;
     --text-secondary: #5c6378;
@@ -71,7 +85,22 @@ html, body {
   gap: 10px;
   margin-bottom: 14px;
 }
+.brand-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+}
+.brand-actions .icon-btn { margin-left: 0; }
+.btn-theme .icon-moon { display: none; }
+html[data-theme="light"] .btn-theme .icon-sun { display: none; }
+html[data-theme="light"] .btn-theme .icon-moon { display: block; }
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) .btn-theme .icon-sun { display: none; }
+  :root:not([data-theme="dark"]) .btn-theme .icon-moon { display: block; }
+}
 .brand-logo { border-radius: 8px; }
+.brand-text { flex: 1; min-width: 0; }
 .brand-text h1 {
   margin: 0;
   font-size: 15px;
@@ -88,7 +117,7 @@ html, body {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  max-width: 220px;
+  max-width: 170px;
 }
 
 /* ── Formulaires ── */
@@ -388,8 +417,29 @@ input:focus {
   font-size: 12px;
   margin: 4px 0 12px;
 }
-.actions { display: flex; gap: 8px; }
-.actions .btn { flex: 1; }
+.actions {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 4px;
+}
+.actions .btn {
+  width: 100%;
+}
+.vault-link {
+  display: block;
+  width: 100%;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--accent-light, var(--accent));
+  font-size: 11px;
+  text-align: center;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+.vault-link:hover { color: var(--accent-hover); }
 
 .toast {
   position: fixed;

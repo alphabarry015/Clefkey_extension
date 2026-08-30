@@ -3,6 +3,8 @@
  * vérification anti-fuite zéro-connaissance via HIBP, k-anonymity SHA-1).
  */
 
+import { fetchWithTimeout } from './http.js';
+
 const LOWER = 'abcdefghijklmnopqrstuvwxyz';
 const UPPER = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
 const DIGITS = '0123456789';
@@ -88,22 +90,32 @@ function clampLength(value) {
 }
 
 function randomInt(max) {
-  const buf = new Uint8Array(1);
-  crypto.getRandomValues(buf);
-  return buf[0] % max;
+  const n = Number(max);
+  if (!Number.isInteger(n) || n <= 0) return 0;
+  const range = 0x100000000;
+  const limit = range - (range % n);
+  const buf = new Uint32Array(1);
+  let x;
+  do {
+    crypto.getRandomValues(buf);
+    x = buf[0];
+  } while (x >= limit);
+  return x % n;
 }
 
 function randomChars(count, chars) {
+  if (count <= 0 || !chars) return '';
   const maxUnbiased = 256 - (256 % chars.length);
-  const buf = new Uint8Array(count + 8);
-  crypto.getRandomValues(buf);
   let out = '';
-  for (const b of buf) {
-    if (out.length >= count) break;
-    if (b >= maxUnbiased) continue;
-    out += chars[b % chars.length];
+  while (out.length < count) {
+    const buf = new Uint8Array(Math.max(16, count - out.length + 8));
+    crypto.getRandomValues(buf);
+    for (const b of buf) {
+      if (b >= maxUnbiased) continue;
+      out += chars[b % chars.length];
+      if (out.length >= count) break;
+    }
   }
-  while (out.length < count) out += chars[out.length % chars.length];
   return out;
 }
 
@@ -190,23 +202,34 @@ export async function checkPassword(password) {
   const hash = await sha1(password);
   const prefix = hash.substring(0, 5);
   const suffix = hash.substring(5);
-  const response = await fetch(`${HIBP_RANGE_URL}${prefix}`);
+  const response = await fetchWithTimeout(`${HIBP_RANGE_URL}${prefix}`, {
+    headers: { 'Add-Padding': 'true' },
+  }, 8000);
   if (!response.ok) throw new Error('Vérification indisponible.');
   const text = await response.text();
   for (const line of text.split(/\r?\n/)) {
     const [hashSuffix, count] = line.split(':');
-    if (hashSuffix === suffix) return parseInt(count, 10) || 0;
+    if (hashSuffix && hashSuffix.trim().toUpperCase() === suffix) {
+      return parseInt(count, 10) || 0;
+    }
   }
   return 0;
 }
 
 /** Génère un mot de passe sûr (non présent dans les fuites connues). */
 export async function generateSafePassword({ length = 20 } = {}) {
-  for (let attempt = 0; attempt < 25; attempt += 1) {
+  let last = '';
+  for (let attempt = 0; attempt < 8; attempt += 1) {
     const pw = buildPassword({ length, upper: true, digits: true, symbols: true });
     if (!pw) throw new Error('Génération impossible.');
-    const count = await checkPassword(pw);
-    if (count === 0) return pw;
+    last = pw;
+    try {
+      const count = await checkPassword(pw);
+      if (count === 0) return pw;
+    } catch {
+      return pw;
+    }
   }
+  if (last) return last;
   throw new Error('Aucun mot de passe sûr trouvé. Réessayez.');
 }

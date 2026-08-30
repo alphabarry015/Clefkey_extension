@@ -13,6 +13,7 @@ const MSG = {
   GET_STATE: 'get-state',
   UNLOCK: 'unlock',
   GET_ENTRIES_FOR_DOMAIN: 'get-entries-for-domain',
+  FILL_ACTIVE_TAB: 'fill-active-tab',
   GENERATE_PASSWORD: 'generate-password',
   SAVE_ENTRY: 'save-entry',
   OFFER_CAPTURE: 'offer-capture',
@@ -20,6 +21,10 @@ const MSG = {
   DISMISS_CAPTURE: 'dismiss-capture',
   CONFIRM_CAPTURE: 'confirm-capture',
 };
+
+function isVaultHost() {
+  return /(^|\.)clefkey\.vercel\.app$/i.test(location.hostname);
+}
 
 function send(type, payload = {}) {
   return new Promise((resolve) => {
@@ -165,7 +170,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 if (window.top === window.self && !window.__clefkeyReady) {
   window.__clefkeyReady = true;
   try {
-    initContentScript();
+    if (!isVaultHost()) initContentScript();
     initCaptureOffer();
   } catch (err) {
     window.__clefkeyReady = false;
@@ -193,24 +198,10 @@ function initContentScript() {
   let panelOpen = false;
   let pendingSave = null;
   let badgeTimer = null;
-  let repositionInterval = null;
 
   document.documentElement.appendChild(host);
 
   // ── Positionnement du badge ────────────────────────────
-
-  /** Boucle de recalage : active uniquement quand un champ est ciblé. */
-  function ensureInterval() {
-    if (repositionInterval) return;
-    repositionInterval = setInterval(() => {
-      if (!currentField) {
-        clearInterval(repositionInterval);
-        repositionInterval = null;
-        return;
-      }
-      reposition();
-    }, 1000);
-  }
 
   /** Recalage différé après mutations du DOM (évite un scan à chaque mutation). */
   function scheduleBadgeCheck() {
@@ -230,7 +221,6 @@ function initContentScript() {
       closePanel();
       return;
     }
-    ensureInterval();
     const rect = field.getBoundingClientRect();
     const hasValue = Boolean(field.value);
     if (hasValue && !pendingSave) {
@@ -268,10 +258,16 @@ function initContentScript() {
     if (e.target === currentField) reposition();
   }, true);
 
-  new MutationObserver(scheduleBadgeCheck).observe(
-    document.documentElement,
-    { childList: true, subtree: true },
-  );
+  new MutationObserver((mutations) => {
+    for (const m of mutations) {
+      const t = m.target;
+      if (t && t.nodeType === 1 && t.closest && t.closest('[data-clefkey-extension],[data-clefkey-capture]')) {
+        continue;
+      }
+      scheduleBadgeCheck();
+      return;
+    }
+  }).observe(document.documentElement, { childList: true, subtree: true });
 
   // ── Panneau des comptes ────────────────────────────────
 
@@ -344,10 +340,20 @@ function initContentScript() {
 
   // ── Remplissage ────────────────────────────────────────
 
-  function fillEntry(entry) {
+  async function fillEntry(entry, submit = false) {
     const field = currentField || pickField();
-    if (!field) return;
-    fillForm(entry.username, entry.password, field, false);
+    const res = await send(MSG.FILL_ACTIVE_TAB, { entryId: entry.id });
+    if (!res.ok) {
+      footEl.textContent = res.message || 'Remplissage impossible.';
+      return;
+    }
+    if (submit && field && field.form) {
+      setTimeout(() => {
+        if (!field.form.checkValidity || field.form.checkValidity()) {
+          field.form.submit();
+        }
+      }, 150);
+    }
     closePanel();
   }
 
@@ -359,10 +365,8 @@ function initContentScript() {
   }
 
   submitBtn.addEventListener('click', () => {
-    const field = currentField || pickField();
-    if (!field || entries.length !== 1) return;
-    fillForm(entries[0].username, entries[0].password, field, true);
-    closePanel();
+    if (entries.length !== 1) return;
+    void fillEntry(entries[0], true);
   });
 
   genBtn.addEventListener('click', async () => {
@@ -617,10 +621,6 @@ function buildTemplate() {
 const SIGNUP_RE = /sign[\s-]?up|signup|register|registration|inscription|inscrire|cr[eé]er?\s*(un\s*)?compte|create[\s-]?account|join|rejoindre|nouveau\s*compte|ouvrir\s*un\s*compte/;
 const LOGIN_RE = /connexion|connecter|connectez|log[\s-]?in|sign[\s-]?in|signin|s['’ ]identifier|se\s+connecter|already\s+have/;
 
-function isVaultHost() {
-  return /(^|\.)clefkey\.vercel\.app$/i.test(location.hostname);
-}
-
 function elementText(el) {
   if (!el) return '';
   return `${el.textContent || ''} ${el.value || ''} ${el.getAttribute('aria-label') || ''} ${el.getAttribute('name') || ''} ${el.id || ''} ${el.className || ''}`.toLowerCase();
@@ -635,32 +635,45 @@ function pageLooksLikeSignup() {
 function formLooksLikeSignup(form) {
   if (!form) return false;
   const passwords = Array.from(form.querySelectorAll('input[type="password"]')).filter((el) => isVisible(el));
-  if (passwords.some((el) => (el.getAttribute('autocomplete') || '').toLowerCase() === 'new-password')) return true;
+  if (passwords.some((el) => /new-password/i.test(el.getAttribute('autocomplete') || ''))) return true;
   if (passwords.length >= 2) return true;
   return SIGNUP_RE.test(elementText(form));
 }
 
-function isSignupSubmit(el, form) {
-  if (!el || el.closest('[data-clefkey-capture]')) return false;
-  const type = (el.getAttribute('type') || '').toLowerCase();
-  if (type === 'password' || type === 'email' || type === 'text') return false;
-  const text = elementText(el);
-  if (LOGIN_RE.test(text) && !SIGNUP_RE.test(text)) return false;
-  if (SIGNUP_RE.test(text)) return true;
+function isSignupContext(form, trigger) {
+  if (trigger) {
+    const text = elementText(trigger);
+    if (LOGIN_RE.test(text) && !SIGNUP_RE.test(text)) return false;
+    if (SIGNUP_RE.test(text)) return true;
+  }
   return pageLooksLikeSignup() || formLooksLikeSignup(form);
+}
+
+function pickSignupPassword(scope) {
+  const passwords = Array.from(scope.querySelectorAll('input[type="password"]'))
+    .filter((el) => isVisible(el) && el.value);
+  if (passwords.length === 0) return null;
+  const created = passwords.find((el) => /new-password/i.test(el.getAttribute('autocomplete') || ''));
+  return created || passwords[0];
+}
+
+function pickSignupUsername(scope, passwordField) {
+  const emails = Array.from(scope.querySelectorAll('input[type="email"]'))
+    .filter((el) => isVisible(el) && el.value.trim());
+  if (emails.length) return emails[0].value.trim();
+  const userField = findUsernameField(passwordField);
+  return userField && userField.value ? userField.value.trim() : '';
 }
 
 function credentialsFromForm(form) {
   const scope = form || document;
-  const passwords = Array.from(scope.querySelectorAll('input[type="password"]')).filter((el) => isVisible(el) && el.value);
-  if (passwords.length === 0) return null;
-  const passwordField = passwords[passwords.length - 1];
-  const userField = findUsernameField(passwordField);
-  const username = userField && userField.value ? userField.value.trim() : '';
+  const passwordField = pickSignupPassword(scope);
+  if (!passwordField) return null;
+  const username = pickSignupUsername(scope, passwordField);
   const password = passwordField.value;
   if (!username || !password) return null;
   return {
-    title: location.hostname,
+    title: location.hostname.replace(/^www\./, ''),
     username,
     password,
     url: location.href,
@@ -669,7 +682,7 @@ function credentialsFromForm(form) {
 
 function sameSite(url) {
   try {
-    return new URL(url).hostname === location.hostname;
+    return new URL(url).hostname.replace(/^www\./, '') === location.hostname.replace(/^www\./, '');
   } catch {
     return false;
   }
@@ -687,72 +700,96 @@ function initCaptureOffer() {
   :host { all: initial; }
   .wrap {
     position: fixed;
+    top: 12px;
     right: 16px;
-    bottom: 16px;
     z-index: 2147483646;
-    width: 300px;
+    width: 320px;
     font-family: 'Segoe UI', system-ui, sans-serif;
     color: #fff;
   }
   .card {
-    padding: 14px;
+    padding: 14px 14px 12px;
     border-radius: 12px;
-    background: #111;
-    border: 1px solid rgba(255,255,255,0.14);
-    box-shadow: 0 12px 32px rgba(0,0,0,0.45);
+    background: #1f1f1f;
+    border: 1px solid rgba(255,255,255,0.12);
+    box-shadow: 0 16px 40px rgba(0,0,0,0.45);
   }
   .card[hidden] { display: none; }
-  h2 { margin: 0 0 6px; font-size: 14px; }
-  .meta { margin: 0 0 10px; font-size: 12px; color: rgba(255,255,255,0.65); word-break: break-all; }
+  .head { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
+  .head svg { flex-shrink: 0; color: #8ab4f8; }
+  h2 { margin: 0; flex: 1; font-size: 14px; font-weight: 600; }
+  .close {
+    border: none; background: transparent; color: inherit; cursor: pointer;
+    padding: 4px; border-radius: 6px; line-height: 0;
+  }
+  .close:hover { background: rgba(255,255,255,0.08); }
   .field { display: flex; flex-direction: column; gap: 4px; margin-bottom: 8px; }
-  .field span { font-size: 11px; font-weight: 600; color: rgba(255,255,255,0.6); text-transform: uppercase; }
+  .field span { font-size: 11px; color: rgba(255,255,255,0.58); }
+  .pw-row { display: flex; align-items: center; gap: 6px; }
   input {
     width: 100%;
     box-sizing: border-box;
     padding: 8px 10px;
     border: 1px solid rgba(255,255,255,0.14);
     border-radius: 8px;
-    background: #000;
+    background: #121212;
     color: #fff;
     font-size: 13px;
   }
-  .row { display: flex; gap: 8px; }
-  .btn {
-    flex: 1;
-    padding: 8px 10px;
-    border: none;
-    border-radius: 8px;
-    background: #3662D7;
-    color: #fff;
-    font-size: 12px;
-    font-weight: 600;
-    cursor: pointer;
+  .eye {
+    flex-shrink: 0; width: 32px; height: 32px; border: none; border-radius: 8px;
+    background: transparent; color: rgba(255,255,255,0.65); cursor: pointer;
   }
-  .btn-ghost { background: transparent; border: 1px solid rgba(255,255,255,0.18); }
+  .row { display: flex; gap: 8px; margin-top: 10px; }
+  .btn {
+    flex: 1; padding: 8px 10px; border: none; border-radius: 20px;
+    background: #8ab4f8; color: #062e6f; font-size: 12px; font-weight: 600; cursor: pointer;
+  }
+  .btn-ghost { background: #3c4043; color: #e8eaed; }
   .status { margin: 8px 0 0; font-size: 11px; color: rgba(255,255,255,0.6); }
   .unlock[hidden], .ask[hidden] { display: none; }
   @media (prefers-color-scheme: light) {
-    .card { background: #fff; color: #1a1d26; border-color: #d8dce8; box-shadow: 0 12px 32px rgba(0,0,0,0.12); }
-    .meta { color: #5c6378; }
+    .card { background: #fff; color: #1a1d26; border-color: #d8dce8; box-shadow: 0 16px 40px rgba(0,0,0,0.14); }
+    .head svg { color: #3662D7; }
     .field span { color: #5c6378; }
-    input { background: #f0f2f7; color: #1a1d26; border-color: #d8dce8; }
-    .btn-ghost { color: #1a1d26; border-color: #d8dce8; }
+    input { background: #f3f5f8; color: #1a1d26; border-color: #d8dce8; }
+    .eye { color: #5c6378; }
+    .btn { background: #3662D7; color: #fff; }
+    .btn-ghost { background: #eef0f6; color: #1a1d26; }
     .status { color: #5c6378; }
   }
 </style>
 <div class="wrap">
   <div class="card" hidden>
-    <h2>Enregistrer ce compte dans Clefkey ?</h2>
-    <p class="meta"></p>
+    <div class="head">
+      <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="7.5" cy="15.5" r="5.5"/><path d="m21 2-9.6 9.6"/><path d="m15.5 7.5 3 3L22 7l-3-3"/></svg>
+      <h2>Enregistrer le mot de passe ?</h2>
+      <button type="button" class="close" data-act="dismiss" aria-label="Fermer">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6 6 18M6 6l12 12"/></svg>
+      </button>
+    </div>
     <div class="ask">
+      <label class="field">
+        <span>Nom d'utilisateur</span>
+        <input id="ck-user" type="text" readonly />
+      </label>
+      <label class="field">
+        <span>Mot de passe</span>
+        <div class="pw-row">
+          <input id="ck-pass" type="password" readonly />
+          <button type="button" class="eye" data-act="toggle" aria-label="Afficher le mot de passe">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>
+          </button>
+        </div>
+      </label>
       <div class="row">
         <button type="button" class="btn" data-act="accept">Enregistrer</button>
-        <button type="button" class="btn btn-ghost" data-act="dismiss">Ignorer</button>
+        <button type="button" class="btn btn-ghost" data-act="dismiss">Non, merci</button>
       </div>
     </div>
     <form class="unlock" hidden>
       <label class="field" data-email-field>
-        <span>E-mail du coffre</span>
+        <span>E-mail du coffre Clefkey</span>
         <input type="email" name="email" autocomplete="username" />
       </label>
       <label class="field">
@@ -760,8 +797,8 @@ function initCaptureOffer() {
         <input type="password" name="master" autocomplete="current-password" />
       </label>
       <div class="row">
-        <button type="submit" class="btn">Déverrouiller</button>
-        <button type="button" class="btn btn-ghost" data-act="dismiss">Ignorer</button>
+        <button type="submit" class="btn">Enregistrer</button>
+        <button type="button" class="btn btn-ghost" data-act="dismiss">Non, merci</button>
       </div>
     </form>
     <p class="status" hidden></p>
@@ -770,15 +807,17 @@ function initCaptureOffer() {
   document.documentElement.appendChild(host);
 
   const card = shadow.querySelector('.card');
-  const meta = shadow.querySelector('.meta');
   const ask = shadow.querySelector('.ask');
   const unlock = shadow.querySelector('.unlock');
+  const userInput = shadow.querySelector('#ck-user');
+  const passInput = shadow.querySelector('#ck-pass');
   const emailField = shadow.querySelector('[data-email-field]');
   const emailInput = unlock.querySelector('input[name="email"]');
   const masterInput = unlock.querySelector('input[name="master"]');
   const status = shadow.querySelector('.status');
   let lastOfferKey = '';
   let offering = false;
+  let snapshot = null;
 
   function setStatus(text) {
     status.hidden = !text;
@@ -791,38 +830,51 @@ function initCaptureOffer() {
     unlock.hidden = true;
     emailInput.value = '';
     masterInput.value = '';
+    passInput.type = 'password';
     setStatus('');
   }
 
   function showCard(capture) {
-    meta.textContent = `${capture.title || location.hostname}\n${capture.username}`;
+    userInput.value = capture.username || '';
+    passInput.value = capture.password || '';
+    passInput.type = 'password';
     card.hidden = false;
     ask.hidden = false;
     unlock.hidden = true;
     setStatus('');
   }
 
-  async function alreadySaved(capture) {
-    const res = await send(MSG.GET_ENTRIES_FOR_DOMAIN, { url: capture.url });
-    if (!res.ok) return false;
-    return (res.entries || []).some(
-      (entry) => entry.username === capture.username && entry.password === capture.password,
-    );
+  function rememberFromPage(form) {
+    const capture = credentialsFromForm(form);
+    if (!capture) return null;
+    if (!isSignupContext(form || document, null) && !pageLooksLikeSignup()) return null;
+    snapshot = capture;
+    return capture;
   }
 
   async function propose(capture) {
+    if (!capture) return;
     const key = `${capture.url}|${capture.username}|${capture.password}`;
     if (offering || key === lastOfferKey) return;
-    if (await alreadySaved(capture)) return;
     offering = true;
     const stored = await send(MSG.OFFER_CAPTURE, capture);
     offering = false;
-    if (!stored.ok) return;
+    if (!stored.ok || stored.duplicate) return;
     lastOfferKey = key;
     showCard(capture);
   }
 
   async function accept() {
+    const username = userInput.value.trim();
+    const password = passInput.value;
+    if (username && password) {
+      await send(MSG.OFFER_CAPTURE, {
+        title: location.hostname.replace(/^www\./, ''),
+        username,
+        password,
+        url: (snapshot && snapshot.url) || location.href,
+      });
+    }
     const state = await send(MSG.GET_PENDING_CAPTURE);
     if (!state.ok || !state.capture) {
       hideCard();
@@ -831,12 +883,8 @@ function initCaptureOffer() {
     if (!state.locked) {
       setStatus('Enregistrement…');
       const saved = await send(MSG.CONFIRM_CAPTURE, {});
-      if (saved.ok) {
-        setStatus('Enregistré dans Clefkey.');
-        setTimeout(hideCard, 1200);
-      } else {
-        setStatus(saved.message || 'Enregistrement impossible.');
-      }
+      setStatus(saved.ok ? 'Enregistré dans Clefkey.' : (saved.message || 'Enregistrement impossible.'));
+      if (saved.ok) setTimeout(hideCard, 1200);
       return;
     }
     ask.hidden = true;
@@ -854,7 +902,7 @@ function initCaptureOffer() {
       setStatus('Mot de passe maître requis.');
       return;
     }
-    setStatus('Déverrouillage…');
+    setStatus('Enregistrement…');
     const saved = await send(MSG.CONFIRM_CAPTURE, { email, master });
     if (saved.ok) {
       setStatus('Enregistré dans Clefkey.');
@@ -866,6 +914,9 @@ function initCaptureOffer() {
     }
   });
 
+  shadow.querySelector('[data-act="toggle"]').addEventListener('click', () => {
+    passInput.type = passInput.type === 'password' ? 'text' : 'password';
+  });
   shadow.querySelectorAll('[data-act="accept"]').forEach((btn) => {
     btn.addEventListener('click', () => accept());
   });
@@ -877,23 +928,31 @@ function initCaptureOffer() {
     });
   });
 
+  document.addEventListener('input', (e) => {
+    const el = e.target;
+    if (!el || el.closest('[data-clefkey-capture]')) return;
+    if (el.matches('input[type="email"], input[type="password"], input[type="text"]')) {
+      rememberFromPage(el.form || document);
+    }
+  }, true);
+
   document.addEventListener('submit', (e) => {
     if (e.target.closest && e.target.closest('[data-clefkey-capture]')) return;
-    const trigger = e.submitter || null;
-    if (!isSignupSubmit(trigger, e.target) && !formLooksLikeSignup(e.target) && !pageLooksLikeSignup()) return;
-    if (trigger && LOGIN_RE.test(elementText(trigger)) && !SIGNUP_RE.test(elementText(trigger))) return;
-    const capture = credentialsFromForm(e.target);
-    if (capture) void propose(capture);
+    if (!isSignupContext(e.target, e.submitter)) return;
+    void propose(rememberFromPage(e.target) || snapshot);
   }, true);
 
   document.addEventListener('click', (e) => {
     const target = e.target.closest('button, input[type="submit"], [role="button"]');
-    if (!target) return;
+    if (!target || target.closest('[data-clefkey-capture]')) return;
     const form = target.form || target.closest('form');
-    if (!isSignupSubmit(target, form)) return;
-    const capture = credentialsFromForm(form);
-    if (capture) void propose(capture);
+    if (!isSignupContext(form, target)) return;
+    void propose(rememberFromPage(form) || snapshot);
   }, true);
+
+  window.addEventListener('pagehide', () => {
+    if (snapshot && isSignupContext(document, null)) void send(MSG.OFFER_CAPTURE, snapshot);
+  });
 
   void send(MSG.GET_PENDING_CAPTURE).then((res) => {
     if (res.ok && res.capture && sameSite(res.capture.url)) showCard(res.capture);
