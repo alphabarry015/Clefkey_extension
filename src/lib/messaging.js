@@ -6,13 +6,13 @@ export function send(type, payload = {}) {
       chrome.runtime.sendMessage({ type, ...payload }, (response) => {
         const lastError = chrome.runtime.lastError;
         if (lastError) {
-          resolve({ ok: false, message: lastError.message || 'Erreur de communication.' });
+          resolve({ ok: false, message: lastError.message || 'Connexion interrompue.' });
           return;
         }
-        resolve(response || { ok: false, message: 'Réponse vide.' });
+        resolve(response || { ok: false, message: 'Aucune réponse.' });
       });
     } catch (err) {
-      resolve({ ok: false, message: err && err.message ? err.message : 'Erreur de communication.' });
+      resolve({ ok: false, message: err && err.message ? err.message : 'Connexion interrompue.' });
     }
   });
 }
@@ -26,7 +26,7 @@ export function listen(type, handler) {
         sendResponse({
           ok: false,
           code: err && err.code ? err.code : 'ERROR',
-          message: (err && err.message) || 'Erreur inconnue.',
+          message: (err && err.message) || 'Une erreur s\'est produite.',
         });
       });
     return true;

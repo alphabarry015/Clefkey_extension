@@ -10,8 +10,15 @@
  */
 
 const MSG = {
+  GET_STATE: 'get-state',
+  UNLOCK: 'unlock',
   GET_ENTRIES_FOR_DOMAIN: 'get-entries-for-domain',
   GENERATE_PASSWORD: 'generate-password',
+  SAVE_ENTRY: 'save-entry',
+  OFFER_CAPTURE: 'offer-capture',
+  GET_PENDING_CAPTURE: 'get-pending-capture',
+  DISMISS_CAPTURE: 'dismiss-capture',
+  CONFIRM_CAPTURE: 'confirm-capture',
 };
 
 function send(type, payload = {}) {
@@ -20,13 +27,13 @@ function send(type, payload = {}) {
       chrome.runtime.sendMessage({ type, ...payload }, (response) => {
         const lastError = chrome.runtime.lastError;
         if (lastError) {
-          resolve({ ok: false, message: lastError.message || 'Erreur de communication.' });
+          resolve({ ok: false, message: lastError.message || 'Connexion interrompue.' });
           return;
         }
-        resolve(response || { ok: false, message: 'Réponse vide.' });
+        resolve(response || { ok: false, message: 'Aucune réponse.' });
       });
     } catch (err) {
-      resolve({ ok: false, message: err && err.message ? err.message : 'Erreur de communication.' });
+      resolve({ ok: false, message: err && err.message ? err.message : 'Connexion interrompue.' });
     }
   });
 }
@@ -143,7 +150,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (!sender || sender.id !== chrome.runtime.id) return false;
   const field = pickField();
   if (!field) {
-    sendResponse({ ok: false, message: 'Aucun formulaire de connexion détecté.' });
+    sendResponse({ ok: false, message: 'Aucun formulaire de connexion.' });
     return false;
   }
   fillForm(message.entry.username, message.entry.password, field, false);
@@ -159,6 +166,7 @@ if (window.top === window.self && !window.__clefkeyReady) {
   window.__clefkeyReady = true;
   try {
     initContentScript();
+    initCaptureOffer();
   } catch (err) {
     window.__clefkeyReady = false;
     throw err;
@@ -177,11 +185,13 @@ function initContentScript() {
   const hostEl = shadow.querySelector('.ck-host');
   const footEl = shadow.querySelector('.ck-foot');
   const submitBtn = shadow.querySelector('.ck-submit');
+  const saveBtn = shadow.querySelector('.ck-save');
   const genBtn = shadow.querySelector('.ck-gen');
 
   let currentField = null;
   let entries = [];
   let panelOpen = false;
+  let pendingSave = null;
   let badgeTimer = null;
   let repositionInterval = null;
 
@@ -223,11 +233,12 @@ function initContentScript() {
     ensureInterval();
     const rect = field.getBoundingClientRect();
     const hasValue = Boolean(field.value);
-    host.style.display = hasValue ? 'none' : 'block';
-    if (hasValue) {
+    if (hasValue && !pendingSave) {
+      host.style.display = 'none';
       closePanel();
       return;
     }
+    host.style.display = 'block';
     host.style.top = `${rect.top + rect.height / 2}px`;
     host.style.left = `${rect.right + 6}px`;
   }
@@ -242,7 +253,7 @@ function initContentScript() {
     }
     host.style.top = `${rect.top + rect.height / 2}px`;
     host.style.left = `${rect.right + 6}px`;
-    if (currentField.value) {
+    if (currentField.value && !pendingSave) {
       host.style.display = 'none';
       closePanel();
     } else {
@@ -271,6 +282,8 @@ function initContentScript() {
     listEl.classList.add('is-loading');
     listEl.textContent = 'Chargement…';
     submitBtn.hidden = true;
+    saveBtn.hidden = true;
+    pendingSave = null;
     footEl.textContent = '';
     hostEl.textContent = location.hostname;
     loadEntries();
@@ -279,6 +292,8 @@ function initContentScript() {
   function closePanel() {
     panel.hidden = true;
     panelOpen = false;
+    saveBtn.hidden = true;
+    pendingSave = null;
   }
 
   async function loadEntries() {
@@ -286,10 +301,10 @@ function initContentScript() {
     if (!res.ok) {
       listEl.classList.remove('is-loading');
       if (res.code === 'NOT_UNLOCKED') {
-        listEl.textContent = 'Extension verrouillée — cliquez sur l\'icône Clefkey pour déverrouiller.';
+        listEl.textContent = 'Clefkey est verrouillé. Ouvrez l\'extension pour continuer.';
         submitBtn.hidden = true;
       } else {
-        listEl.textContent = res.message || 'Impossible de charger les comptes.';
+        listEl.textContent = res.message || 'Impossible de charger les identifiants.';
         submitBtn.hidden = true;
       }
       return;
@@ -354,16 +369,45 @@ function initContentScript() {
     const field = currentField || pickField();
     if (!field || (field.type || '').toLowerCase() !== 'password') return;
     genBtn.disabled = true;
-    footEl.textContent = 'Génération + vérification anti-fuite…';
+    footEl.textContent = 'Vérification en cours…';
     const res = await send(MSG.GENERATE_PASSWORD, { length: 20 });
     genBtn.disabled = false;
     if (!res.ok) {
       footEl.textContent = res.message || 'Génération impossible.';
       return;
     }
+    pendingSave = { password: res.password };
     fillGenerated(res.password, field);
-    footEl.textContent = 'Mot de passe généré et rempli.';
-    setTimeout(closePanel, 900);
+    saveBtn.hidden = false;
+    footEl.textContent = 'Mot de passe généré.';
+  });
+
+  saveBtn.addEventListener('click', async () => {
+    if (!pendingSave) return;
+    const field = currentField || pickField();
+    const userField = field ? findUsernameField(field) : null;
+    const username = userField && userField.value ? userField.value.trim() : '';
+    if (!username) {
+      footEl.textContent = 'Indiquez un identifiant.';
+      return;
+    }
+    saveBtn.disabled = true;
+    footEl.textContent = 'Enregistrement…';
+    const res = await send(MSG.SAVE_ENTRY, {
+      title: location.hostname,
+      username,
+      password: pendingSave.password,
+      url: location.href,
+    });
+    saveBtn.disabled = false;
+    if (!res.ok) {
+      footEl.textContent = res.message || 'Enregistrement impossible.';
+      return;
+    }
+    pendingSave = null;
+    saveBtn.hidden = true;
+    footEl.textContent = 'Enregistré dans Clefkey.';
+    setTimeout(() => closePanel(), 900);
   });
 
   function fillGenerated(password, passwordField) {
@@ -518,8 +562,20 @@ function buildTemplate() {
     font-weight: 600;
     cursor: pointer;
   }
-  .ck-submit[hidden] { display: none; }
-  .ck-submit:hover { background: #2f58c8; }
+  .ck-submit[hidden], .ck-save[hidden] { display: none; }
+  .ck-submit:hover, .ck-save:hover { background: #2f58c8; }
+  .ck-save {
+    width: 100%;
+    margin-top: 6px;
+    padding: 8px 10px;
+    border: none;
+    border-radius: 8px;
+    background: #3662D7;
+    color: #ffffff;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+  }
   .ck-foot { font-size: 10px; color: rgba(255, 255, 255, 0.5); padding: 2px 6px; }
   @media (prefers-color-scheme: light) {
     .ck-badge { background: #ffffff; color: #1a1d26; box-shadow: 0 1px 4px rgba(0,0,0,0.2); }
@@ -533,7 +589,7 @@ function buildTemplate() {
     .ck-item { color: #1a1d26; }
     .ck-item:hover { background: rgba(54, 98, 215, 0.12); }
     .ck-item-user { color: rgba(26, 29, 38, 0.6); }
-    .ck-submit { background: #3662D7; color: #ffffff; }
+    .ck-submit, .ck-save { background: #3662D7; color: #ffffff; }
     .ck-foot { color: rgba(26, 29, 38, 0.5); }
   }
 </style>
@@ -544,13 +600,302 @@ function buildTemplate() {
   <div class="ck-title-row">
     <span class="ck-title">Clefkey</span>
     <span class="ck-host"></span>
-    <button type="button" class="ck-gen" title="Générer un mot de passe fort" aria-label="Générer un mot de passe fort" hidden>
+    <button type="button" class="ck-gen" title="Générer un mot de passe" aria-label="Générer un mot de passe" hidden>
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m21 2-9.6 9.6"/><circle cx="7.5" cy="15.5" r="5.5"/><path d="m15.5 7.5 3 3L22 7l-3-3"/></svg>
     </button>
   </div>
   <div class="ck-list"></div>
-  <button type="button" class="ck-submit" hidden>Remplir et soumettre</button>
+  <button type="button" class="ck-submit" hidden>Remplir et envoyer</button>
+  <button type="button" class="ck-save" hidden>Enregistrer</button>
   <div class="ck-foot"></div>
 </div>
 `;
+}
+
+// ── Proposition d'enregistrement après inscription ───────
+
+const SIGNUP_RE = /sign[\s-]?up|signup|register|registration|inscription|inscrire|cr[eé]er?\s*(un\s*)?compte|create[\s-]?account|join|rejoindre|nouveau\s*compte|ouvrir\s*un\s*compte/;
+const LOGIN_RE = /connexion|connecter|connectez|log[\s-]?in|sign[\s-]?in|signin|s['’ ]identifier|se\s+connecter|already\s+have/;
+
+function isVaultHost() {
+  return /(^|\.)clefkey\.vercel\.app$/i.test(location.hostname);
+}
+
+function elementText(el) {
+  if (!el) return '';
+  return `${el.textContent || ''} ${el.value || ''} ${el.getAttribute('aria-label') || ''} ${el.getAttribute('name') || ''} ${el.id || ''} ${el.className || ''}`.toLowerCase();
+}
+
+function pageLooksLikeSignup() {
+  const path = `${location.pathname} ${location.hash} ${document.title || ''}`.toLowerCase();
+  if (LOGIN_RE.test(path) && !SIGNUP_RE.test(path)) return false;
+  return SIGNUP_RE.test(path);
+}
+
+function formLooksLikeSignup(form) {
+  if (!form) return false;
+  const passwords = Array.from(form.querySelectorAll('input[type="password"]')).filter((el) => isVisible(el));
+  if (passwords.some((el) => (el.getAttribute('autocomplete') || '').toLowerCase() === 'new-password')) return true;
+  if (passwords.length >= 2) return true;
+  return SIGNUP_RE.test(elementText(form));
+}
+
+function isSignupSubmit(el, form) {
+  if (!el || el.closest('[data-clefkey-capture]')) return false;
+  const type = (el.getAttribute('type') || '').toLowerCase();
+  if (type === 'password' || type === 'email' || type === 'text') return false;
+  const text = elementText(el);
+  if (LOGIN_RE.test(text) && !SIGNUP_RE.test(text)) return false;
+  if (SIGNUP_RE.test(text)) return true;
+  return pageLooksLikeSignup() || formLooksLikeSignup(form);
+}
+
+function credentialsFromForm(form) {
+  const scope = form || document;
+  const passwords = Array.from(scope.querySelectorAll('input[type="password"]')).filter((el) => isVisible(el) && el.value);
+  if (passwords.length === 0) return null;
+  const passwordField = passwords[passwords.length - 1];
+  const userField = findUsernameField(passwordField);
+  const username = userField && userField.value ? userField.value.trim() : '';
+  const password = passwordField.value;
+  if (!username || !password) return null;
+  return {
+    title: location.hostname,
+    username,
+    password,
+    url: location.href,
+  };
+}
+
+function sameSite(url) {
+  try {
+    return new URL(url).hostname === location.hostname;
+  } catch {
+    return false;
+  }
+}
+
+function initCaptureOffer() {
+  if (isVaultHost() || window.__clefkeyCapture) return;
+  window.__clefkeyCapture = true;
+
+  const host = document.createElement('div');
+  host.setAttribute('data-clefkey-capture', '');
+  const shadow = host.attachShadow({ mode: 'closed' });
+  shadow.innerHTML = `
+<style>
+  :host { all: initial; }
+  .wrap {
+    position: fixed;
+    right: 16px;
+    bottom: 16px;
+    z-index: 2147483646;
+    width: 300px;
+    font-family: 'Segoe UI', system-ui, sans-serif;
+    color: #fff;
+  }
+  .card {
+    padding: 14px;
+    border-radius: 12px;
+    background: #111;
+    border: 1px solid rgba(255,255,255,0.14);
+    box-shadow: 0 12px 32px rgba(0,0,0,0.45);
+  }
+  .card[hidden] { display: none; }
+  h2 { margin: 0 0 6px; font-size: 14px; }
+  .meta { margin: 0 0 10px; font-size: 12px; color: rgba(255,255,255,0.65); word-break: break-all; }
+  .field { display: flex; flex-direction: column; gap: 4px; margin-bottom: 8px; }
+  .field span { font-size: 11px; font-weight: 600; color: rgba(255,255,255,0.6); text-transform: uppercase; }
+  input {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 8px 10px;
+    border: 1px solid rgba(255,255,255,0.14);
+    border-radius: 8px;
+    background: #000;
+    color: #fff;
+    font-size: 13px;
+  }
+  .row { display: flex; gap: 8px; }
+  .btn {
+    flex: 1;
+    padding: 8px 10px;
+    border: none;
+    border-radius: 8px;
+    background: #3662D7;
+    color: #fff;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  .btn-ghost { background: transparent; border: 1px solid rgba(255,255,255,0.18); }
+  .status { margin: 8px 0 0; font-size: 11px; color: rgba(255,255,255,0.6); }
+  .unlock[hidden], .ask[hidden] { display: none; }
+  @media (prefers-color-scheme: light) {
+    .card { background: #fff; color: #1a1d26; border-color: #d8dce8; box-shadow: 0 12px 32px rgba(0,0,0,0.12); }
+    .meta { color: #5c6378; }
+    .field span { color: #5c6378; }
+    input { background: #f0f2f7; color: #1a1d26; border-color: #d8dce8; }
+    .btn-ghost { color: #1a1d26; border-color: #d8dce8; }
+    .status { color: #5c6378; }
+  }
+</style>
+<div class="wrap">
+  <div class="card" hidden>
+    <h2>Enregistrer ce compte dans Clefkey ?</h2>
+    <p class="meta"></p>
+    <div class="ask">
+      <div class="row">
+        <button type="button" class="btn" data-act="accept">Enregistrer</button>
+        <button type="button" class="btn btn-ghost" data-act="dismiss">Ignorer</button>
+      </div>
+    </div>
+    <form class="unlock" hidden>
+      <label class="field" data-email-field>
+        <span>E-mail du coffre</span>
+        <input type="email" name="email" autocomplete="username" />
+      </label>
+      <label class="field">
+        <span>Mot de passe maître</span>
+        <input type="password" name="master" autocomplete="current-password" />
+      </label>
+      <div class="row">
+        <button type="submit" class="btn">Déverrouiller</button>
+        <button type="button" class="btn btn-ghost" data-act="dismiss">Ignorer</button>
+      </div>
+    </form>
+    <p class="status" hidden></p>
+  </div>
+</div>`;
+  document.documentElement.appendChild(host);
+
+  const card = shadow.querySelector('.card');
+  const meta = shadow.querySelector('.meta');
+  const ask = shadow.querySelector('.ask');
+  const unlock = shadow.querySelector('.unlock');
+  const emailField = shadow.querySelector('[data-email-field]');
+  const emailInput = unlock.querySelector('input[name="email"]');
+  const masterInput = unlock.querySelector('input[name="master"]');
+  const status = shadow.querySelector('.status');
+  let lastOfferKey = '';
+  let offering = false;
+
+  function setStatus(text) {
+    status.hidden = !text;
+    status.textContent = text || '';
+  }
+
+  function hideCard() {
+    card.hidden = true;
+    ask.hidden = false;
+    unlock.hidden = true;
+    emailInput.value = '';
+    masterInput.value = '';
+    setStatus('');
+  }
+
+  function showCard(capture) {
+    meta.textContent = `${capture.title || location.hostname}\n${capture.username}`;
+    card.hidden = false;
+    ask.hidden = false;
+    unlock.hidden = true;
+    setStatus('');
+  }
+
+  async function alreadySaved(capture) {
+    const res = await send(MSG.GET_ENTRIES_FOR_DOMAIN, { url: capture.url });
+    if (!res.ok) return false;
+    return (res.entries || []).some(
+      (entry) => entry.username === capture.username && entry.password === capture.password,
+    );
+  }
+
+  async function propose(capture) {
+    const key = `${capture.url}|${capture.username}|${capture.password}`;
+    if (offering || key === lastOfferKey) return;
+    if (await alreadySaved(capture)) return;
+    offering = true;
+    const stored = await send(MSG.OFFER_CAPTURE, capture);
+    offering = false;
+    if (!stored.ok) return;
+    lastOfferKey = key;
+    showCard(capture);
+  }
+
+  async function accept() {
+    const state = await send(MSG.GET_PENDING_CAPTURE);
+    if (!state.ok || !state.capture) {
+      hideCard();
+      return;
+    }
+    if (!state.locked) {
+      setStatus('Enregistrement…');
+      const saved = await send(MSG.CONFIRM_CAPTURE, {});
+      if (saved.ok) {
+        setStatus('Enregistré dans Clefkey.');
+        setTimeout(hideCard, 1200);
+      } else {
+        setStatus(saved.message || 'Enregistrement impossible.');
+      }
+      return;
+    }
+    ask.hidden = true;
+    unlock.hidden = false;
+    emailField.hidden = Boolean(state.hasSession);
+    if (state.hasSession && state.email) emailInput.value = state.email;
+    masterInput.focus();
+  }
+
+  unlock.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const email = emailInput.value.trim();
+    const master = masterInput.value;
+    if (!master) {
+      setStatus('Mot de passe maître requis.');
+      return;
+    }
+    setStatus('Déverrouillage…');
+    const saved = await send(MSG.CONFIRM_CAPTURE, { email, master });
+    if (saved.ok) {
+      setStatus('Enregistré dans Clefkey.');
+      setTimeout(hideCard, 1200);
+    } else {
+      setStatus(saved.message || 'Identifiants incorrects.');
+      masterInput.value = '';
+      masterInput.focus();
+    }
+  });
+
+  shadow.querySelectorAll('[data-act="accept"]').forEach((btn) => {
+    btn.addEventListener('click', () => accept());
+  });
+  shadow.querySelectorAll('[data-act="dismiss"]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      await send(MSG.DISMISS_CAPTURE);
+      lastOfferKey = '';
+      hideCard();
+    });
+  });
+
+  document.addEventListener('submit', (e) => {
+    if (e.target.closest && e.target.closest('[data-clefkey-capture]')) return;
+    const trigger = e.submitter || null;
+    if (!isSignupSubmit(trigger, e.target) && !formLooksLikeSignup(e.target) && !pageLooksLikeSignup()) return;
+    if (trigger && LOGIN_RE.test(elementText(trigger)) && !SIGNUP_RE.test(elementText(trigger))) return;
+    const capture = credentialsFromForm(e.target);
+    if (capture) void propose(capture);
+  }, true);
+
+  document.addEventListener('click', (e) => {
+    const target = e.target.closest('button, input[type="submit"], [role="button"]');
+    if (!target) return;
+    const form = target.form || target.closest('form');
+    if (!isSignupSubmit(target, form)) return;
+    const capture = credentialsFromForm(form);
+    if (capture) void propose(capture);
+  }, true);
+
+  void send(MSG.GET_PENDING_CAPTURE).then((res) => {
+    if (res.ok && res.capture && sameSite(res.capture.url)) showCard(res.capture);
+  });
 }

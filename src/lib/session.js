@@ -7,7 +7,7 @@
  *   du navigateur, non accessible aux content scripts).
  */
 
-import { PREFS_DEFAULTS, STORAGE_KEYS } from './constants.js';
+import { DEFAULT_SERVER_URL, PREFS_DEFAULTS, STORAGE_KEYS } from './constants.js';
 
 const ext = globalThis.browser || globalThis.chrome || {};
 
@@ -17,9 +17,14 @@ function storageArea(name) {
 
 export async function getPrefs() {
   const area = storageArea('local');
-  if (!area) return { ...PREFS_DEFAULTS };
+  const base = { ...PREFS_DEFAULTS };
+  if (!area) return { ...base, serverUrl: DEFAULT_SERVER_URL };
   const data = await area.get(STORAGE_KEYS.prefs);
-  return { ...PREFS_DEFAULTS, ...(data[STORAGE_KEYS.prefs] || {}) };
+  return {
+    ...base,
+    ...(data[STORAGE_KEYS.prefs] || {}),
+    serverUrl: DEFAULT_SERVER_URL,
+  };
 }
 
 export async function savePrefs(prefs) {

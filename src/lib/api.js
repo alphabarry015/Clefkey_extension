@@ -24,13 +24,11 @@ async function request(apiBase, path, options = {}) {
   try {
     resp = await fetch(`${apiBase}${path}`, { ...options, headers });
   } catch {
-    throw new Error(
-      `Impossible de joindre le serveur (${apiBase}${path}). Vérifiez que le serveur tourne et que la permission d'accès à cette URL est accordée (Options → Serveur).`,
-    );
+    throw new Error('Impossible de joindre Clefkey. Vérifiez votre connexion.');
   }
   if (!resp.ok) {
     const err = await resp.json().catch(() => ({ detail: resp.statusText }));
-    const message = formatApiError(err, `Erreur serveur (${resp.status})`);
+    const message = formatApiError(err, 'Erreur serveur.');
     const e = new Error(message);
     e.status = resp.status;
     throw e;

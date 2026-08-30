@@ -1,17 +1,17 @@
 /**
  * Génère les icônes PNG de l'extension (16/32/48/128/192/512) en pur Node.
  *
- * Aucune dépendance native : rasterisation SDF + encodeur PNG minimal
- * (node:zlib). Dessine l'icône Clefkey : fond noir arrondi, clef blanche,
- * trou de serrure accent bleu.
+ * Source : src/icons/icon.png (logo Clefkey). Redimensionnement bilinéaire
+ * + encodeur PNG (node:zlib), sans dépendance native.
  */
 
-import { deflateSync } from 'node:zlib';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { deflateSync, inflateSync } from 'node:zlib';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
+const SOURCE = join(ROOT, 'src', 'icons', 'icon.png');
 const OUT_DIR = join(ROOT, 'dist', 'icons');
 const SIZES = [16, 32, 48, 128, 192, 512];
 
@@ -52,13 +52,12 @@ function encodePng(width, height, rgba) {
   const ihdr = Buffer.alloc(13);
   ihdr.writeUInt32BE(width, 0);
   ihdr.writeUInt32BE(height, 4);
-  ihdr[8] = 8;  // bit depth
-  ihdr[9] = 6;  // color type RGBA
-  ihdr[10] = 0; // compression
-  ihdr[11] = 0; // filter
-  ihdr[12] = 0; // interlace
+  ihdr[8] = 8;
+  ihdr[9] = 6;
+  ihdr[10] = 0;
+  ihdr[11] = 0;
+  ihdr[12] = 0;
 
-  // Scanlines filtrées (filter 0) compressées.
   const raw = Buffer.alloc((width * 4 + 1) * height);
   let offset = 0;
   for (let y = 0; y < height; y += 1) {
@@ -77,92 +76,116 @@ function encodePng(width, height, rgba) {
   ]);
 }
 
-// ── Rasterisation SDF de l'icône ─────────────────────────
+// ── Décodage PNG (8-bit RGBA) ────────────────────────────
 
-function clamp01(v) {
-  return v < 0 ? 0 : v > 1 ? 1 : v;
+function paeth(a, b, c) {
+  const p = a + b - c;
+  const pa = Math.abs(p - a);
+  const pb = Math.abs(p - b);
+  const pc = Math.abs(p - c);
+  if (pa <= pb && pa <= pc) return a;
+  if (pb <= pc) return b;
+  return c;
 }
 
-function smoothstep(a, b, x) {
-  const t = clamp01((x - a) / (b - a));
-  return t * t * (3 - 2 * t);
-}
-
-/** SDF d'un rectangle arrondi dans un repère 0..1. */
-function roundedRect(x, y, cx, cy, w, h, r) {
-  const dx = Math.abs(x - cx) - (w / 2 - r);
-  const dy = Math.abs(y - cy) - (h / 2 - r);
-  const ox = Math.max(dx, 0);
-  const oy = Math.max(dy, 0);
-  return Math.hypot(ox, oy) + Math.min(Math.max(dx, dy), 0) - r;
-}
-
-/** SDF d'un disque. */
-function circle(x, y, cx, cy, r) {
-  return Math.hypot(x - cx, y - cy) - r;
-}
-
-function pixelColor(x, y) {
-  // Icône conçue dans le repère 0..1 (coordonnées).
-  const ACCENT = [54, 98, 215, 255];
-  const WHITE = [255, 255, 255, 255];
-  const BLACK = [0, 0, 0, 255];
-
-  const bg = roundedRect(x, y, 0.5, 0.5, 1.0, 1.0, 0.22);
-  if (bg > 0) return [0, 0, 0, 0]; // transparent hors fond arrondi
-
-  // Lettre « C » (Clefkey) : anneau ouvert à droite, motif réduit et centré
-  // pour laisser de la marge par rapport aux bords de l'icône.
-  const ringOut = circle(x, y, 0.5, 0.5, 0.26);
-  const ringIn = circle(x, y, 0.5, 0.5, 0.17);
-  const ring = Math.max(ringOut, -ringIn);
-  const notch = roundedRect(x, y, 0.72, 0.5, 0.42, 0.34, 0.08);
-  const cShape = Math.max(ring, -notch);
-
-  const cCoverage = 1 - smoothstep(0, 0.5, cShape);
-
-  // Point accent (trou de serrure) dans l'ouverture du « C ».
-  const dot = circle(x, y, 0.75, 0.5, 0.03);
-  const dotCoverage = 1 - smoothstep(0, 0.5, dot);
-
-  let r = 0, g = 0, b = 0, a = 0;
-  if (dotCoverage > 0) {
-    r = ACCENT[0]; g = ACCENT[1]; b = ACCENT[2]; a = Math.round(255 * dotCoverage);
-  } else if (cCoverage > 0) {
-    r = WHITE[0]; g = WHITE[1]; b = WHITE[2]; a = Math.round(255 * cCoverage);
-  } else {
-    r = BLACK[0]; g = BLACK[1]; b = BLACK[2]; a = BLACK[3];
+function decodePng(buffer) {
+  if (buffer[0] !== 0x89 || buffer[1] !== 0x50) {
+    throw new Error('Fichier PNG invalide.');
   }
-  return [r, g, b, a];
+  let offset = 8;
+  let width = 0;
+  let height = 0;
+  let bitDepth = 0;
+  let colorType = 0;
+  const idatParts = [];
+  while (offset + 12 <= buffer.length) {
+    const length = buffer.readUInt32BE(offset);
+    const type = buffer.toString('ascii', offset + 4, offset + 8);
+    const data = buffer.subarray(offset + 8, offset + 8 + length);
+    if (type === 'IHDR') {
+      width = data.readUInt32BE(0);
+      height = data.readUInt32BE(4);
+      bitDepth = data[8];
+      colorType = data[9];
+    } else if (type === 'IDAT') {
+      idatParts.push(data);
+    } else if (type === 'IEND') {
+      break;
+    }
+    offset += 12 + length;
+  }
+  if (bitDepth !== 8 || colorType !== 6) {
+    throw new Error(`PNG non supporté (bit=${bitDepth}, color=${colorType}). Attendu RGBA 8-bit.`);
+  }
+  const inflated = inflateSync(Buffer.concat(idatParts));
+  const bpp = 4;
+  const stride = width * bpp;
+  const rgba = Buffer.alloc(stride * height);
+  let src = 0;
+  let prev = Buffer.alloc(stride);
+  for (let y = 0; y < height; y += 1) {
+    const filter = inflated[src];
+    src += 1;
+    const row = inflated.subarray(src, src + stride);
+    src += stride;
+    const out = rgba.subarray(y * stride, (y + 1) * stride);
+    for (let i = 0; i < stride; i += 1) {
+      const left = i >= bpp ? out[i - bpp] : 0;
+      const up = prev[i];
+      const upLeft = i >= bpp ? prev[i - bpp] : 0;
+      let value = row[i];
+      if (filter === 1) value = (value + left) & 255;
+      else if (filter === 2) value = (value + up) & 255;
+      else if (filter === 3) value = (value + Math.floor((left + up) / 2)) & 255;
+      else if (filter === 4) value = (value + paeth(left, up, upLeft)) & 255;
+      else if (filter !== 0) throw new Error(`Filtre PNG non supporté : ${filter}`);
+      out[i] = value;
+    }
+    prev = Buffer.from(out);
+  }
+  return { width, height, rgba };
 }
 
-function render(size) {
-  const rgba = Buffer.alloc(size * size * 4);
-  const step = 1 / size;
-  for (let py = 0; py < size; py += 1) {
-    for (let px = 0; px < size; px += 1) {
-      // Échantillon au centre du pixel (repère 0..1).
-      const x = (px + 0.5) * step;
-      const y = (py + 0.5) * step;
-      const [r, g, b, a] = pixelColor(x, y);
-      const o = (py * size + px) * 4;
-      rgba[o] = r;
-      rgba[o + 1] = g;
-      rgba[o + 2] = b;
-      rgba[o + 3] = a;
+function resizeRgba(src, sw, sh, dw, dh) {
+  if (sw === dw && sh === dh) return Buffer.from(src);
+  const dst = Buffer.alloc(dw * dh * 4);
+  for (let y = 0; y < dh; y += 1) {
+    const sy = ((y + 0.5) * sh) / dh - 0.5;
+    const y0 = Math.max(0, Math.min(sh - 1, Math.floor(sy)));
+    const y1 = Math.max(0, Math.min(sh - 1, y0 + 1));
+    const fy = Math.min(1, Math.max(0, sy - y0));
+    for (let x = 0; x < dw; x += 1) {
+      const sx = ((x + 0.5) * sw) / dw - 0.5;
+      const x0 = Math.max(0, Math.min(sw - 1, Math.floor(sx)));
+      const x1 = Math.max(0, Math.min(sw - 1, x0 + 1));
+      const fx = Math.min(1, Math.max(0, sx - x0));
+      const o = (y * dw + x) * 4;
+      for (let c = 0; c < 4; c += 1) {
+        const p00 = src[(y0 * sw + x0) * 4 + c];
+        const p10 = src[(y0 * sw + x1) * 4 + c];
+        const p01 = src[(y1 * sw + x0) * 4 + c];
+        const p11 = src[(y1 * sw + x1) * 4 + c];
+        dst[o + c] = Math.round(
+          p00 * (1 - fx) * (1 - fy)
+          + p10 * fx * (1 - fy)
+          + p01 * (1 - fx) * fy
+          + p11 * fx * fy,
+        );
+      }
     }
   }
-  return encodePng(size, size, rgba);
+  return dst;
 }
 
 /** Génère toutes les icônes dans OUT_DIR. Retourne la liste des fichiers. */
 export function generateIcons() {
+  const source = decodePng(readFileSync(SOURCE));
   const written = [];
   mkdirSync(OUT_DIR, { recursive: true });
   for (const size of SIZES) {
-    const png = render(size);
+    const rgba = resizeRgba(source.rgba, source.width, source.height, size, size);
     const file = join(OUT_DIR, `icon-${size}.png`);
-    writeFileSync(file, png);
+    writeFileSync(file, encodePng(size, size, rgba));
     written.push(file);
     console.log(`  icon-${size}.png`);
   }
@@ -170,7 +193,6 @@ export function generateIcons() {
   return written;
 }
 
-// Exécution directe : node scripts/icons.mjs
 const isMain = process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1];
 if (isMain) {
   generateIcons();

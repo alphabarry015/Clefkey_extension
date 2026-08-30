@@ -177,7 +177,7 @@ function toHex(buffer) {
 
 async function sha1(value) {
   if (!crypto || !crypto.subtle) {
-    throw new Error('Web Crypto non disponible.');
+    throw new Error('Chiffrement indisponible.');
   }
   const digest = await crypto.subtle.digest('SHA-1', new TextEncoder().encode(value));
   return toHex(digest);
@@ -191,7 +191,7 @@ export async function checkPassword(password) {
   const prefix = hash.substring(0, 5);
   const suffix = hash.substring(5);
   const response = await fetch(`${HIBP_RANGE_URL}${prefix}`);
-  if (!response.ok) throw new Error('Service de vérification indisponible.');
+  if (!response.ok) throw new Error('Vérification indisponible.');
   const text = await response.text();
   for (const line of text.split(/\r?\n/)) {
     const [hashSuffix, count] = line.split(':');
@@ -208,5 +208,5 @@ export async function generateSafePassword({ length = 20 } = {}) {
     const count = await checkPassword(pw);
     if (count === 0) return pw;
   }
-  throw new Error('Aucun mot de passe sûr trouvé — réessayez.');
+  throw new Error('Aucun mot de passe sûr trouvé. Réessayez.');
 }

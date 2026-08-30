@@ -17,7 +17,7 @@ const PARALLELISM = 4;
 
 function assertCryptoReady() {
   if (!globalThis.crypto || !globalThis.crypto.subtle) {
-    throw new Error('WebCrypto indisponible dans ce contexte.');
+    throw new Error('Chiffrement indisponible.');
   }
 }
 
@@ -79,9 +79,9 @@ export async function deriveKey(masterPassword, salt) {
   } catch (err) {
     const msg = err && err.message ? String(err.message) : 'Erreur inconnue';
     if (/out of memory/i.test(msg)) {
-      throw new Error('Dérivation de clé interrompue (mémoire insuffisante).');
+      throw new Error('Mémoire insuffisante. Réessayez.');
     }
-    throw new Error(`Échec de la dérivation Argon2 : ${msg}`);
+    throw new Error('Impossible de dériver la clé.');
   }
 }
 
@@ -162,9 +162,7 @@ export async function prepareLogin(email, masterPassword, apiBase) {
   try {
     resp = await fetch(`${apiBase}/auth/salt?email=${encodeURIComponent(email)}`);
   } catch {
-    throw new Error(
-      `Impossible de joindre le serveur (${apiBase}/auth/salt). Vérifiez que le serveur tourne et que la permission d'accès à cette URL est accordée (Options → Serveur).`,
-    );
+    throw new Error('Impossible de joindre Clefkey. Vérifiez votre connexion.');
   }
   if (!resp.ok) {
     let detail = '';
@@ -175,7 +173,7 @@ export async function prepareLogin(email, masterPassword, apiBase) {
     if (resp.status === 429) {
       throw new Error(detail || 'Trop de tentatives. Réessayez plus tard.');
     }
-    throw new Error(detail || 'Impossible de préparer la connexion');
+    throw new Error(detail || 'Impossible de préparer la connexion.');
   }
   const { salt: saltB64 } = await resp.json();
   const salt = fromB64(saltB64);

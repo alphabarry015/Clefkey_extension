@@ -1,6 +1,6 @@
 /* Popup — état, connexion, verrouillage. */
 
-import { MSG } from '../lib/constants.js';
+import { DEFAULT_SERVER_URL, MSG } from '../lib/constants.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -31,6 +31,8 @@ function showScreen(name) {
 function setBusy(button, busy, label) {
   if (!button) return;
   button.disabled = busy;
+  button.classList.toggle('is-busy', busy);
+  if (button.classList.contains('gen-run')) return;
   if (busy && label) button.dataset.label = button.textContent;
   if (busy) button.textContent = label;
   else if (button.dataset.label) button.textContent = button.dataset.label;
@@ -42,22 +44,23 @@ function send(type, payload = {}) {
       chrome.runtime.sendMessage({ type, ...payload }, (response) => {
         const lastError = chrome.runtime.lastError;
         if (lastError) {
-          resolve({ ok: false, message: lastError.message || 'Erreur de communication.' });
+          resolve({ ok: false, message: lastError.message || 'Connexion interrompue.' });
           return;
         }
-        resolve(response || { ok: false, message: 'Réponse vide.' });
+        resolve(response || { ok: false, message: 'Aucune réponse.' });
       });
     } catch (err) {
-      resolve({ ok: false, message: err && err.message ? err.message : 'Erreur de communication.' });
+      resolve({ ok: false, message: err && err.message ? err.message : 'Connexion interrompue.' });
     }
   });
 }
 
+function openVault() {
+  chrome.tabs.create({ url: DEFAULT_SERVER_URL });
+  window.close();
+}
+
 function renderState(state) {
-  const serverEl = $('login-server');
-  if (serverEl) {
-    serverEl.textContent = state.serverUrl ? `Serveur : ${state.serverUrl}` : '';
-  }
   if (!state.locked) {
     $('main-user').textContent = state.user && state.user.email ? state.user.email : 'Déverrouillé';
     showScreen('main');
@@ -81,7 +84,7 @@ function renderState(state) {
 async function refreshState() {
   const res = await send(MSG.GET_STATE);
   if (res.ok) renderState(res);
-  else showToast(res.message || 'Impossible de lire l\'état.', 'error');
+  else showToast(res.message || 'Impossible de charger Clefkey.', 'error');
 }
 
 let activeTab = null;
@@ -171,7 +174,7 @@ async function runUnlock(form) {
   if (res.ok) {
     renderState(await send(MSG.GET_STATE));
   } else {
-    showToast(res.message || 'Échec du déverrouillage.', 'error');
+    showToast(res.message || 'Identifiants incorrects.', 'error');
     $('login-master').value = '';
     $('login-master').focus();
   }
@@ -213,15 +216,8 @@ $('btn-unlock-logout').addEventListener('click', async () => {
   renderState(await send(MSG.GET_STATE));
 });
 
-$('btn-unlock-options').addEventListener('click', () => chrome.runtime.openOptionsPage());
-$('btn-options').addEventListener('click', () => chrome.runtime.openOptionsPage());
-
-$('btn-open-vault').addEventListener('click', async () => {
-  const state = await send(MSG.GET_STATE);
-  if (!state.ok) return;
-  chrome.tabs.create({ url: state.serverUrl });
-  window.close();
-});
+$('btn-login-vault').addEventListener('click', () => openVault());
+$('btn-open-vault').addEventListener('click', () => openVault());
 
 // ── Générateur ───────────────────────────────────────────
 
@@ -282,10 +278,36 @@ function bindGenerator() {
   const copyBtn = $('btn-gen-copy');
   const status = $('gen-password-status');
 
+  const saveBox = $('gen-save');
+  const saveSite = $('gen-save-site');
+  const saveUser = $('gen-save-user');
+  const saveBtn = $('btn-gen-save');
+  let saveUrl = '';
+
+  const hideSave = () => {
+    if (saveBox) saveBox.hidden = true;
+    if (saveUser) saveUser.value = '';
+    saveUrl = '';
+  };
+
+  const showSave = async () => {
+    if (!saveBox) return;
+    await getActiveTab();
+    const url = activeTab && /^https?:/.test(activeTab.url || '') ? activeTab.url : '';
+    saveUrl = url;
+    try {
+      saveSite.textContent = url ? new URL(url).hostname : 'Ouvrez le site dans un onglet.';
+    } catch {
+      saveSite.textContent = 'Ouvrez le site dans un onglet.';
+    }
+    saveBox.hidden = false;
+  };
+
   const resetOutput = () => {
     valueInput.value = '';
     copyBtn.hidden = true;
     status.hidden = true;
+    hideSave();
   };
 
   genBtn.addEventListener('click', async () => {
@@ -293,21 +315,42 @@ function bindGenerator() {
     setBusy(genBtn, true, 'Vérification…');
     status.hidden = false;
     status.classList.remove('is-safe');
-    status.textContent = 'Génération + vérification anti-fuite…';
+    status.textContent = 'Vérification en cours…';
     const res = await send(MSG.GENERATE_PASSWORD, { length: lengthInput.value });
     setBusy(genBtn, false);
     if (res.ok) {
       valueInput.value = res.password;
       copyBtn.hidden = false;
-      setGenStatus(status, 'Mot de passe sûr — non présent dans les fuites connues.', 'safe');
+      setGenStatus(status, 'Mot de passe sûr. Absent des fuites connues.', 'safe');
+      await showSave();
     } else {
       setGenStatus(status, res.message || 'Génération impossible.');
     }
   });
 
+  saveBtn.addEventListener('click', async () => {
+    const password = valueInput.value;
+    const username = (saveUser.value || '').trim();
+    if (!password) return;
+    setBusy(saveBtn, true, 'Enregistrement…');
+    const res = await send(MSG.SAVE_ENTRY, {
+      title: saveUrl ? new URL(saveUrl).hostname : '',
+      username,
+      password,
+      url: saveUrl,
+    });
+    setBusy(saveBtn, false);
+    if (res.ok) {
+      hideSave();
+      showToast('Enregistré dans Clefkey.', 'success');
+    } else {
+      showToast(res.message || 'Enregistrement impossible.', 'error');
+    }
+  });
+
   copyBtn.addEventListener('click', async () => {
     if (valueInput.value && await copyText(valueInput.value)) {
-      showToast('Mot de passe copié', 'success');
+      showToast('Mot de passe copié.', 'success');
     }
   });
 
@@ -331,7 +374,7 @@ function bindGenerator() {
 
   ppCopy.addEventListener('click', async () => {
     if (ppValue.value && await copyText(ppValue.value)) {
-      showToast('Passphrase copiée', 'success');
+      showToast('Passphrase copiée.', 'success');
     }
   });
 }
@@ -351,6 +394,10 @@ function resetGeneratorOutputs() {
   status.hidden = true;
   $('gen-pp-value').value = '';
   $('btn-pp-copy').hidden = true;
+  const saveBox = $('gen-save');
+  if (saveBox) saveBox.hidden = true;
+  const saveUser = $('gen-save-user');
+  if (saveUser) saveUser.value = '';
 }
 if (!generatorBound) {
   bindGenerator();

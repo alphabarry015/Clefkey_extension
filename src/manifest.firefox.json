@@ -1,21 +1,17 @@
 {
   "manifest_version": 3,
-  "name": "Clefkey — Gestionnaire de mots de passe",
+  "name": "Clefkey. Gestionnaire de mots de passe",
   "short_name": "Clefkey",
   "version": "0.1.0",
-  "description": "Autofill, générateur et capture d'identifiants pour le coffre Clefkey. Client du serveur, aucune donnée en clair ne transite.",
+  "description": "Remplissez vos identifiants et générez des mots de passe. Vos secrets restent sur votre appareil.",
   "permissions": [
     "storage",
     "activeTab",
     "scripting"
   ],
   "host_permissions": [
-    "https://*.vercel.app/*",
+    "https://clefkey.vercel.app/*",
     "https://api.pwnedpasswords.com/*"
-  ],
-  "optional_host_permissions": [
-    "http://localhost:8000/*",
-    "http://127.0.0.1:8000/*"
   ],
   "content_security_policy": {
     "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'"
@@ -40,10 +36,6 @@
       "48": "icons/icon-48.png",
       "128": "icons/icon-128.png"
     }
-  },
-  "options_ui": {
-    "page": "options/options.html",
-    "open_in_tab": true
   },
   "icons": {
     "16": "icons/icon-16.png",

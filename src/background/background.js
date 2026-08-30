@@ -6,9 +6,9 @@
  */
 
 import { api } from '../lib/api.js';
-import { MSG } from '../lib/constants.js';
-import { decryptData, fromB64, prepareLogin, unlockSession } from '../lib/crypto.js';
-import { entryMatchesUrl, pageHostname } from '../lib/domain.js';
+import { MSG, STORAGE_KEYS } from '../lib/constants.js';
+import { decryptData, encryptData, fromB64, prepareLogin, toB64, unlockSession } from '../lib/crypto.js';
+import { entryMatchesUrl, normalizeEntryUrl, pageHostname } from '../lib/domain.js';
 import { generatePassphrase, generateSafePassword } from '../lib/generator.js';
 import {
   getPrefs, getStoredSession, saveSession, clearSession,
@@ -112,7 +112,7 @@ async function doUnlock({ email, master, autoRelock = true }) {
     authMaterial = stored.authMaterial;
     Object.assign(memory, keys, { entries: [], unlockedAt: Date.now() });
   } else {
-    if (!email) throw new Error('Email requis.');
+    if (!email) throw new Error('E-mail requis.');
     const prepared = await prepareLogin(email, master, apiBase);
     const data = await api.login(apiBase, email, prepared.authVerifier);
     const keys = await unlockSession(data, master, {
@@ -144,12 +144,13 @@ async function doLogout() {
   clearAutoLockTimer();
   wipeUnlockedMemory(memory);
   await clearSession();
+  await clearPendingCapture();
   return { ok: true };
 }
 
 async function requireEntriesLoaded() {
   if (memory.entries.length > 0) return memory.entries;
-  if (!isUnlocked()) throw { code: 'NOT_UNLOCKED', message: 'Extension verrouillée.' };
+  if (!isUnlocked()) throw { code: 'NOT_UNLOCKED', message: 'Clefkey est verrouillé.' };
   const prefs = await getPrefs();
   const stored = await getStoredSession();
   if (!stored?.token) throw { code: 'NOT_UNLOCKED', message: 'Session invalide.' };
@@ -183,7 +184,7 @@ async function requireEntriesLoaded() {
   } catch (err) {
     if (err && (err.status === 401 || err.status === 403)) {
       await doLogout();
-      throw { code: 'NOT_UNLOCKED', message: 'Session expirée, reconnectez-vous.' };
+      throw { code: 'NOT_UNLOCKED', message: 'Session expirée. Reconnectez-vous.' };
     }
     throw err;
   }
@@ -234,7 +235,7 @@ async function sendFillToTab(tabId, entry) {
   } catch {
     throw {
       code: 'NO_CONTENT',
-      message: 'Impossible de remplir cette page (sites restreints).',
+      message: 'Impossible de remplir cette page.',
     };
   }
   try {
@@ -242,7 +243,7 @@ async function sendFillToTab(tabId, entry) {
   } catch {
     throw {
       code: 'NO_CONTENT',
-      message: 'Impossible de remplir cette page (page non rechargée).',
+      message: 'Rechargez la page puis réessayez.',
     };
   }
 }
@@ -252,14 +253,14 @@ async function doFillActiveTab({ entryId, tabId, url }) {
   const entry = entries.find(
     (e) => e.id === entryId && e.type === 'login' && entryMatchesUrl(e, url || ''),
   );
-  if (!entry) throw { code: 'NOT_FOUND', message: 'Aucun identifiant correspondant.' };
+  if (!entry) throw { code: 'NOT_FOUND', message: 'Identifiant introuvable.' };
   if (!Number.isInteger(tabId)) throw { code: 'ERROR', message: 'Onglet invalide.' };
   try {
     await sendFillToTab(tabId, entry);
   } catch {
     throw {
       code: 'NO_CONTENT',
-      message: 'Impossible de remplir cette page (sites restreints ou page non rechargée).',
+      message: 'Impossible de remplir cette page. Rechargez-la puis réessayez.',
     };
   }
   return { ok: true };
@@ -276,6 +277,126 @@ async function doGeneratePassword({ length }) {
 
 async function doGeneratePassphrase({ count }) {
   return { ok: true, passphrase: generatePassphrase(count || 5) };
+}
+
+const CAPTURE_TTL_MS = 10 * 60 * 1000;
+let pendingCapture = null;
+
+function captureIsFresh(entry) {
+  return Boolean(entry && entry.password && entry.url && (Date.now() - Number(entry.at || 0) < CAPTURE_TTL_MS));
+}
+
+async function persistPendingCapture(entry) {
+  pendingCapture = entry;
+  try {
+    await chrome.storage.session.set({ [STORAGE_KEYS.pendingCapture]: entry });
+  } catch { /* session storage indisponible */ }
+}
+
+async function readPendingCapture() {
+  if (captureIsFresh(pendingCapture)) return pendingCapture;
+  try {
+    const data = await chrome.storage.session.get(STORAGE_KEYS.pendingCapture);
+    const stored = data[STORAGE_KEYS.pendingCapture];
+    if (captureIsFresh(stored)) {
+      pendingCapture = stored;
+      return stored;
+    }
+  } catch { /* ignore */ }
+  pendingCapture = null;
+  return null;
+}
+
+async function clearPendingCapture() {
+  pendingCapture = null;
+  try {
+    await chrome.storage.session.remove(STORAGE_KEYS.pendingCapture);
+  } catch { /* ignore */ }
+}
+
+async function doOfferCapture({ title, username, password, url }) {
+  const pageUrl = normalizeEntryUrl(url);
+  const user = String(username || '').trim();
+  const secret = String(password || '');
+  if (!pageUrl || !user || !secret) {
+    throw new Error('Identifiant et mot de passe requis.');
+  }
+  await persistPendingCapture({
+    title: String(title || '').trim() || pageHostname(pageUrl) || 'Identifiant',
+    username: user,
+    password: secret,
+    url: pageUrl,
+    at: Date.now(),
+  });
+  return { ok: true };
+}
+
+async function doGetPendingCapture() {
+  const [cap, state] = await Promise.all([readPendingCapture(), getState()]);
+  if (!cap) return { ok: true, capture: null, locked: state.locked, hasSession: state.hasSession };
+  return {
+    ok: true,
+    locked: state.locked,
+    hasSession: state.hasSession,
+    email: state.email,
+    capture: {
+      title: cap.title,
+      username: cap.username,
+      url: cap.url,
+      password: cap.password,
+    },
+  };
+}
+
+async function doDismissCapture() {
+  await clearPendingCapture();
+  return { ok: true };
+}
+
+async function doConfirmCapture({ email, master }) {
+  const cap = await readPendingCapture();
+  if (!cap) throw new Error('Aucune proposition.');
+  if (!isUnlocked()) {
+    await doUnlock({ email, master });
+  }
+  const saved = await doSaveEntry(cap);
+  await clearPendingCapture();
+  return saved;
+}
+
+async function doSaveEntry({ title, username, password, url }) {
+  if (!isUnlocked()) throw { code: 'NOT_UNLOCKED', message: 'Clefkey est verrouillé.' };
+  const secret = String(password || '');
+  const user = String(username || '').trim();
+  const pageUrl = normalizeEntryUrl(url);
+  if (!secret) throw new Error('Mot de passe requis.');
+  if (!user) throw new Error('Indiquez un identifiant.');
+  if (!pageUrl) throw new Error('Ouvrez le site dans un onglet.');
+  const prefs = await getPrefs();
+  const stored = await getStoredSession();
+  if (!stored?.token) throw { code: 'NOT_UNLOCKED', message: 'Session invalide.' };
+  const host = pageHostname(pageUrl);
+  const payload = {
+    title: String(title || '').trim() || host || 'Identifiant',
+    type: 'login',
+    username: user,
+    password: secret,
+    notes: '',
+    url: pageUrl,
+  };
+  try {
+    const encrypted = await encryptData(payload, memory.vaultKey);
+    await api.createEntry(prefs.serverUrl, stored.token, toB64(encrypted));
+    memory.entries = [];
+    await scheduleAutoLock();
+    return { ok: true, title: payload.title, username: payload.username, url: payload.url };
+  } catch (err) {
+    if (err && (err.status === 401 || err.status === 403)) {
+      await doLogout();
+      throw { code: 'NOT_UNLOCKED', message: 'Session expirée. Reconnectez-vous.' };
+    }
+    throw err;
+  }
 }
 
 // ── État ─────────────────────────────────────────────────
@@ -296,14 +417,14 @@ async function getState() {  const [prefs, stored] = await Promise.all([getPrefs
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (!message || typeof message.type !== 'string') return false;
-  // Seuls les messages de notre propre extension sont acceptés (popup, options,
+  // Seuls les messages de notre propre extension sont acceptés (popup,
   // content scripts). Une autre extension ne doit pouvoir ni lire les entrées
   // déchiffrées, ni déverrouiller/verrouiller la session.
   if (!sender || sender.id !== chrome.runtime.id) return false;
   const handle = (promise) => {
     promise.then(sendResponse, (err) => {
       const code = err && err.code ? err.code : (err && err.status ? `HTTP_${err.status}` : 'ERROR');
-      sendResponse({ ok: false, code, message: (err && err.message) || 'Erreur inconnue.' });
+      sendResponse({ ok: false, code, message: (err && err.message) || 'Une erreur s\'est produite.' });
     });
     return true; // réponse asynchrone
   };
@@ -327,6 +448,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return handle(doGeneratePassword(message));
     case MSG.GENERATE_PASSPHRASE:
       return handle(doGeneratePassphrase(message));
+    case MSG.SAVE_ENTRY:
+      return handle(doSaveEntry(message));
+    case MSG.OFFER_CAPTURE:
+      return handle(doOfferCapture(message));
+    case MSG.GET_PENDING_CAPTURE:
+      return handle(doGetPendingCapture());
+    case MSG.DISMISS_CAPTURE:
+      return handle(doDismissCapture());
+    case MSG.CONFIRM_CAPTURE:
+      return handle(doConfirmCapture(message));
     default:
       return false;
   }

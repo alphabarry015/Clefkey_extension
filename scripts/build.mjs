@@ -42,7 +42,6 @@ const FILES_TO_COPY = [
   'background',
   'content',
   'popup',
-  'options',
   'vendor',
 ];
 
@@ -59,6 +58,7 @@ function buildVariant(variant) {
     if (existsSync(from)) copyDir(from, join(DIST, name));
   }
   copyFileSync(join(SRC, 'icons', 'icon.svg'), join(DIST, 'icons', 'icon.svg'));
+  copyFileSync(join(SRC, 'icons', 'icon.png'), join(DIST, 'icons', 'icon.png'));
   copyFileSync(manifestSrc, manifestDst);
   generateIcons();
   console.log(`  ${variant} → dist/ prêt (${manifestSrc.split(/[\\/]/).pop()})`);
@@ -72,6 +72,7 @@ function main() {
     rmSync(DIST, { recursive: true, force: true });
     mkdirSync(join(DIST, 'icons'), { recursive: true });
     copyFileSync(join(SRC, 'icons', 'icon.svg'), join(DIST, 'icons', 'icon.svg'));
+    copyFileSync(join(SRC, 'icons', 'icon.png'), join(DIST, 'icons', 'icon.png'));
     generateIcons();
     return;
   }
