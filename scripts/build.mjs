@@ -57,8 +57,11 @@ function buildVariant(variant) {
     const from = join(SRC, name);
     if (existsSync(from)) copyDir(from, join(DIST, name));
   }
-  copyFileSync(join(SRC, 'icons', 'icon.svg'), join(DIST, 'icons', 'icon.svg'));
-  copyFileSync(join(SRC, 'icons', 'icon.png'), join(DIST, 'icons', 'icon.png'));
+  const iconPng = join(SRC, 'icons', 'icon.png');
+  if (!existsSync(iconPng)) throw new Error('Icône source introuvable : src/icons/icon.png');
+  copyFileSync(iconPng, join(DIST, 'icons', 'icon.png'));
+  const mark = join(SRC, 'icons', 'logo-chevalier.png');
+  if (existsSync(mark)) copyFileSync(mark, join(DIST, 'icons', 'logo-chevalier.png'));
   copyFileSync(manifestSrc, manifestDst);
   generateIcons();
   console.log(`  ${variant} → dist/ prêt (${manifestSrc.split(/[\\/]/).pop()})`);
@@ -71,8 +74,9 @@ function main() {
   if (target === 'icons') {
     rmSync(DIST, { recursive: true, force: true });
     mkdirSync(join(DIST, 'icons'), { recursive: true });
-    copyFileSync(join(SRC, 'icons', 'icon.svg'), join(DIST, 'icons', 'icon.svg'));
-    copyFileSync(join(SRC, 'icons', 'icon.png'), join(DIST, 'icons', 'icon.png'));
+    const iconPng = join(SRC, 'icons', 'icon.png');
+    if (!existsSync(iconPng)) throw new Error('Icône source introuvable : src/icons/icon.png');
+    copyFileSync(iconPng, join(DIST, 'icons', 'icon.png'));
     generateIcons();
     return;
   }

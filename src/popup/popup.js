@@ -2,6 +2,7 @@
 
 import { DEFAULT_SERVER_URL, MSG } from '../lib/constants.js';
 import { send } from '../lib/messaging.js';
+import { applyPassphraseFormatting, formatPassphraseInput } from '../lib/passphrase.js';
 import { getPrefs, savePrefs } from '../lib/session.js';
 
 const $ = (id) => document.getElementById(id);
@@ -90,8 +91,11 @@ function renderState(state) {
     const who = state.email ? state.email : 'Session verrouillée';
     $('unlock-who').textContent = who;
     $('unlock-master').value = '';
+    $('unlock-passphrase').value = '';
     showScreen('unlock');
-    $('unlock-master').focus();
+    // Comme sur le site : les deux modes restent cliquables ; défaut = passphrase si dispo
+    unlockHasPassphrase = Boolean(state.hasPassphrase);
+    setUnlockMode(unlockHasPassphrase ? 'passphrase' : 'master');
     return;
   }
   $('login-email').value = '';
@@ -199,18 +203,76 @@ async function runUnlock(form) {
   }
 }
 
+/** Soft-lock : true si le wrap passphrase est en session (comme le site). */
+let unlockHasPassphrase = false;
+/** Mode UI courant : 'passphrase' | 'master' */
+let unlockMode = 'master';
+
+function setUnlockMode(mode) {
+  // L'utilisateur est toujours libre de basculer (comme sur le site)
+  unlockMode = mode === 'passphrase' ? 'passphrase' : 'master';
+  const usePassphrase = unlockMode === 'passphrase';
+  $('unlock-mode-passphrase')?.classList.toggle('is-active', usePassphrase);
+  $('unlock-mode-master')?.classList.toggle('is-active', !usePassphrase);
+  // Ne jamais désactiver les boutons — choix libre
+  const modePp = $('unlock-mode-passphrase');
+  if (modePp) modePp.disabled = false;
+  const modeMaster = $('unlock-mode-master');
+  if (modeMaster) modeMaster.disabled = false;
+
+  const ppField = $('unlock-passphrase-field');
+  const masterField = $('unlock-master-field');
+  if (ppField) ppField.hidden = !usePassphrase;
+  if (masterField) masterField.hidden = usePassphrase;
+  setTimeout(() => {
+    (usePassphrase ? $('unlock-passphrase') : $('unlock-master'))?.focus();
+  }, 30);
+}
+
 async function runUnlockExisting() {
-  const master = $('unlock-master').value;
+  const usePassphrase = unlockMode === 'passphrase';
   const btn = $('btn-unlock');
+  if (usePassphrase && !unlockHasPassphrase) {
+    showToast(
+      'Passphrase pas encore en session. Utilisez le mot de passe maître une fois (ou reconnectez-vous).',
+      'error',
+    );
+    setUnlockMode('master');
+    return;
+  }
   setBusy(btn, true, 'Déverrouillage…');
-  const res = await send(MSG.UNLOCK, { master });
+  let res;
+  if (usePassphrase) {
+    const passphrase = formatPassphraseInput($('unlock-passphrase').value || '');
+    if (!passphrase) {
+      setBusy(btn, false);
+      showToast('Saisissez votre passphrase.', 'error');
+      $('unlock-passphrase')?.focus();
+      return;
+    }
+    res = await send(MSG.UNLOCK, { passphrase });
+  } else {
+    const master = $('unlock-master').value;
+    if (!master) {
+      setBusy(btn, false);
+      showToast('Saisissez votre mot de passe maître.', 'error');
+      $('unlock-master')?.focus();
+      return;
+    }
+    res = await send(MSG.UNLOCK, { master });
+  }
   setBusy(btn, false);
   if (res.ok) {
     renderState(await send(MSG.GET_STATE));
   } else {
-    showToast(res.message || 'Mot de passe maître incorrect.', 'error');
-    $('unlock-master').value = '';
-    $('unlock-master').focus();
+    showToast(res.message || (usePassphrase ? 'Passphrase incorrecte.' : 'Mot de passe maître incorrect.'), 'error');
+    if (usePassphrase) {
+      $('unlock-passphrase').value = '';
+      $('unlock-passphrase').focus();
+    } else {
+      $('unlock-master').value = '';
+      $('unlock-master').focus();
+    }
   }
 }
 
@@ -222,6 +284,10 @@ $('form-unlock').addEventListener('submit', (e) => {
   e.preventDefault();
   runUnlockExisting();
 });
+
+$('unlock-mode-passphrase')?.addEventListener('click', () => setUnlockMode('passphrase'));
+$('unlock-mode-master')?.addEventListener('click', () => setUnlockMode('master'));
+$('unlock-passphrase')?.addEventListener('input', (e) => applyPassphraseFormatting(e.target));
 
 $('btn-lock').addEventListener('click', async () => {
   await send(MSG.LOCK);

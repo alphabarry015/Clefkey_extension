@@ -7,9 +7,13 @@
 
 import { api } from '../lib/api.js';
 import { MSG, MSG_ALLOW_CONTENT, STORAGE_KEYS } from '../lib/constants.js';
-import { decryptData, encryptData, fromB64, prepareLogin, toB64, unlockSession } from '../lib/crypto.js';
+import {
+  decryptData, encryptData, fromB64, prepareLogin, toB64,
+  unlockSession, unlockSessionWithPassphrase,
+} from '../lib/crypto.js';
 import { entryMatchesUrl, normalizeEntryUrl, pageHostname } from '../lib/domain.js';
 import { generatePassphrase, generateSafePassword } from '../lib/generator.js';
+import { formatPassphraseInput, hasPassphraseMaterial } from '../lib/passphrase.js';
 import {
   getPrefs, getStoredSession, saveSession, clearSession,
   wipeUnlockedMemory, ensureSessionAccessLevel,
@@ -131,12 +135,17 @@ function publicEntry(entry) {
 
 function authMaterialFromPayload(payload) {
   if (!payload?.salt || !payload?.encrypted_vault_key) return null;
-  return {
+  const material = {
     salt: payload.salt,
     encrypted_vault_key: payload.encrypted_vault_key,
     encrypted_private_key: payload.encrypted_private_key || null,
     public_key: payload.public_key || null,
   };
+  if (payload.passphrase_salt && payload.encrypted_vault_key_passphrase) {
+    material.passphrase_salt = payload.passphrase_salt;
+    material.encrypted_vault_key_passphrase = payload.encrypted_vault_key_passphrase;
+  }
+  return material;
 }
 
 function assertCredentialBounds(user, secret) {
@@ -146,23 +155,68 @@ function assertCredentialBounds(user, secret) {
 
 // ── Actions ──────────────────────────────────────────────
 
-async function doUnlock({ email, master, autoRelock = true }) {
-  if (!master) throw new Error('Mot de passe maître requis.');
+async function doUnlock({ email, master, passphrase, autoRelock = true }) {
   const prefs = await getPrefs();
   const apiBase = prefs.serverUrl;
   const stored = await getStoredSession();
+  const phrase = passphrase ? formatPassphraseInput(passphrase) : '';
 
   let token;
   let user;
   let authMaterial;
 
   if (stored && stored.authMaterial) {
-    const keys = await unlockSession(stored.authMaterial, master);
-    token = stored.token;
-    user = stored.user;
-    authMaterial = stored.authMaterial;
+    // Soft-lock : l'utilisateur choisit librement passphrase OU mot de passe maître
+    let keys;
+    if (phrase) {
+      if (!hasPassphraseMaterial(stored.authMaterial)) {
+        throw new Error(
+          'Passphrase indisponible dans cette session. Déverrouillez avec le mot de passe maître une fois, ou reconnectez-vous.',
+        );
+      }
+      try {
+        keys = await unlockSessionWithPassphrase(stored.authMaterial, phrase);
+      } catch (err) {
+        if (err && /Aucune passphrase|indisponible/i.test(String(err.message || ''))) throw err;
+        throw new Error('Passphrase incorrecte.');
+      }
+      token = stored.token;
+      user = stored.user;
+      authMaterial = stored.authMaterial;
+    } else if (master) {
+      try {
+        keys = await unlockSession(stored.authMaterial, master);
+      } catch {
+        throw new Error('Mot de passe maître incorrect.');
+      }
+      token = stored.token;
+      user = stored.user;
+      authMaterial = stored.authMaterial;
+      // Rafraîchit le wrap passphrase depuis le serveur (sessions ouvertes avant la feature)
+      const email = (stored.user && stored.user.email) || '';
+      if (email) {
+        try {
+          const prepared = await prepareLogin(email, master, apiBase);
+          try {
+            const data = await api.login(apiBase, email, prepared.authVerifier);
+            token = data.access_token || token;
+            user = userFromProfile(data) || user;
+            const refreshed = authMaterialFromPayload(data);
+            if (refreshed) authMaterial = refreshed;
+          } finally {
+            if (prepared.derived) prepared.derived.fill(0);
+          }
+        } catch {
+          /* garde le matériel local si le refresh échoue */
+        }
+      }
+    } else {
+      throw new Error('Choisissez une passphrase ou un mot de passe maître.');
+    }
     Object.assign(memory, keys, { entries: [], entriesLoaded: false, unlockedAt: Date.now() });
   } else {
+    // Première connexion : e-mail + mot de passe maître (pas la passphrase seule)
+    if (!master) throw new Error('Mot de passe maître requis.');
     if (!email) throw new Error('E-mail requis.');
     const prepared = await prepareLogin(email, master, apiBase);
     try {
@@ -422,12 +476,19 @@ async function doOfferCapture(message, sender) {
 async function doGetPendingCapture(_message, sender) {
   const [cap, state] = await Promise.all([readPendingCapture(), getState()]);
   if (!cap || !captureMatchesSender(cap, sender)) {
-    return { ok: true, capture: null, locked: state.locked, hasSession: state.hasSession };
+    return {
+      ok: true,
+      capture: null,
+      locked: state.locked,
+      hasSession: state.hasSession,
+      hasPassphrase: state.hasPassphrase,
+    };
   }
   return {
     ok: true,
     locked: state.locked,
     hasSession: state.hasSession,
+    hasPassphrase: state.hasPassphrase,
     email: state.email,
     capture: {
       title: cap.title,
@@ -450,7 +511,11 @@ async function doConfirmCapture(message, sender) {
   if (!cap) throw new Error('Aucune proposition.');
   if (!captureMatchesSender(cap, sender)) throw new Error('Proposition invalide.');
   if (!isUnlocked()) {
-    await doUnlock({ email: message.email, master: message.master });
+    await doUnlock({
+      email: message.email,
+      master: message.master,
+      passphrase: message.passphrase,
+    });
   }
   const saved = await doSaveEntry(cap, sender);
   await clearPendingCapture();
@@ -502,6 +567,7 @@ async function getState() {
     ok: true,
     locked: !isUnlocked(),
     hasSession: Boolean(stored),
+    hasPassphrase: hasPassphraseMaterial(stored?.authMaterial),
     user: normalizeUser(stored?.user || null),
     email: (stored?.user?.email) || null,
     serverUrl: prefs.serverUrl,

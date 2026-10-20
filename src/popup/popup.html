@@ -62,10 +62,21 @@
       </header>
 
       <form id="form-unlock" class="form" autocomplete="on">
-        <label class="field">
+        <p class="hint unlock-intro">Déverrouillez votre compte.</p>
+        <div class="unlock-modes" role="tablist" aria-label="Mode de déverrouillage">
+          <button type="button" class="unlock-mode is-active" id="unlock-mode-passphrase" data-unlock-mode="passphrase">Passphrase</button>
+          <button type="button" class="unlock-mode" id="unlock-mode-master" data-unlock-mode="master">Mot de passe</button>
+        </div>
+        <label class="field" id="unlock-passphrase-field">
+          <span class="field-label">Passphrase</span>
+          <span class="field-control">
+            <input id="unlock-passphrase" type="text" name="passphrase" autocomplete="off" spellcheck="false" placeholder="Ex. Le chat dort sur le toit" />
+          </span>
+        </label>
+        <label class="field" id="unlock-master-field" hidden>
           <span class="field-label">Mot de passe maître</span>
           <span class="field-control">
-            <input id="unlock-master" type="password" name="master" autocomplete="current-password" placeholder="••••••••••••" required />
+            <input id="unlock-master" type="password" name="master" autocomplete="current-password" placeholder="••••••••••••" />
             <svg class="field-key" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m21 2-9.6 9.6"/><circle cx="7.5" cy="15.5" r="5.5"/><path d="m15.5 7.5 3 3L22 7l-3-3"/></svg>
           </span>
         </label>

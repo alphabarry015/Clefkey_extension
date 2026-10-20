@@ -267,6 +267,37 @@ input:focus {
   margin: 0;
 }
 
+/* ── Soft-lock : passphrase / mot de passe ── */
+.unlock-modes {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 4px;
+  padding: 3px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated);
+}
+.unlock-mode {
+  flex: 1;
+  padding: 6px 8px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  font-family: inherit;
+}
+.unlock-mode.is-active {
+  background: var(--accent);
+  color: #fff;
+  box-shadow: 0 1px 3px var(--accent-glow);
+}
+.unlock-intro {
+  margin: 0 0 4px;
+  line-height: 1.4;
+}
+
 /* ── Générateur ── */
 .gen-tabs {
   display: flex;

@@ -748,6 +748,17 @@ function initCaptureOffer() {
   .btn-ghost { background: #3c4043; color: #e8eaed; }
   .status { margin: 8px 0 0; font-size: 11px; color: rgba(255,255,255,0.6); }
   .unlock[hidden], .ask[hidden] { display: none; }
+  .unlock-modes {
+    display: flex; gap: 4px; margin-bottom: 8px; padding: 3px;
+    border-radius: 8px; background: rgba(255,255,255,0.06);
+  }
+  .unlock-modes[hidden] { display: none; }
+  .unlock-mode {
+    flex: 1; padding: 6px; border: none; border-radius: 6px;
+    background: transparent; color: rgba(255,255,255,0.7);
+    font-size: 11px; font-weight: 600; cursor: pointer;
+  }
+  .unlock-mode.is-active { background: #8ab4f8; color: #062e6f; }
   @media (prefers-color-scheme: light) {
     .card { background: #fff; color: #1a1d26; border-color: #d8dce8; box-shadow: 0 16px 40px rgba(0,0,0,0.14); }
     .head svg { color: #3662D7; }
@@ -792,7 +803,15 @@ function initCaptureOffer() {
         <span>E-mail du coffre Clefkey</span>
         <input type="email" name="email" autocomplete="username" />
       </label>
-      <label class="field">
+      <div class="unlock-modes" data-unlock-modes hidden>
+        <button type="button" class="unlock-mode is-active" data-unlock-mode="passphrase">Passphrase</button>
+        <button type="button" class="unlock-mode" data-unlock-mode="master">Mot de passe</button>
+      </div>
+      <label class="field" data-passphrase-field hidden>
+        <span>Passphrase</span>
+        <input type="text" name="passphrase" autocomplete="off" spellcheck="false" placeholder="Ex. Le chat dort sur le toit" />
+      </label>
+      <label class="field" data-master-field>
         <span>Mot de passe maître</span>
         <input type="password" name="master" autocomplete="current-password" />
       </label>
@@ -814,10 +833,42 @@ function initCaptureOffer() {
   const emailField = shadow.querySelector('[data-email-field]');
   const emailInput = unlock.querySelector('input[name="email"]');
   const masterInput = unlock.querySelector('input[name="master"]');
+  const passphraseInput = unlock.querySelector('input[name="passphrase"]');
+  const passphraseField = shadow.querySelector('[data-passphrase-field]');
+  const masterField = shadow.querySelector('[data-master-field]');
+  const unlockModes = shadow.querySelector('[data-unlock-modes]');
   const status = shadow.querySelector('.status');
   let lastOfferKey = '';
   let offering = false;
   let snapshot = null;
+  let unlockMode = 'master';
+
+  function formatPassphraseInput(raw) {
+    const text = String(raw ?? '');
+    let out = '';
+    let capitalizeNext = true;
+    for (const ch of text) {
+      if (capitalizeNext && /[a-zA-ZÀ-ÖØ-öø-ÿ]/.test(ch)) {
+        out += ch.toLocaleUpperCase('fr-FR');
+        capitalizeNext = false;
+        continue;
+      }
+      out += ch;
+      if (ch === '.') capitalizeNext = true;
+    }
+    return out;
+  }
+
+  function setUnlockMode(mode) {
+    // Choix libre passphrase / MDP (comme le site)
+    unlockMode = mode === 'passphrase' ? 'passphrase' : 'master';
+    unlockModes?.querySelectorAll('.unlock-mode').forEach((btn) => {
+      btn.classList.toggle('is-active', btn.dataset.unlockMode === unlockMode);
+      btn.disabled = false;
+    });
+    if (passphraseField) passphraseField.hidden = unlockMode !== 'passphrase';
+    if (masterField) masterField.hidden = unlockMode === 'passphrase';
+  }
 
   function setStatus(text) {
     status.hidden = !text;
@@ -830,6 +881,7 @@ function initCaptureOffer() {
     unlock.hidden = true;
     emailInput.value = '';
     masterInput.value = '';
+    if (passphraseInput) passphraseInput.value = '';
     passInput.type = 'password';
     setStatus('');
   }
@@ -891,26 +943,64 @@ function initCaptureOffer() {
     unlock.hidden = false;
     emailField.hidden = Boolean(state.hasSession);
     if (state.hasSession && state.email) emailInput.value = state.email;
-    masterInput.focus();
+    // Comme le site / popup : toujours proposer les deux modes si session soft-lock
+    if (unlockModes) unlockModes.hidden = !state.hasSession;
+    const hasPp = Boolean(state.hasSession && state.hasPassphrase);
+    setUnlockMode(hasPp ? 'passphrase' : 'master');
+    (unlockMode === 'passphrase' ? passphraseInput : masterInput)?.focus();
   }
+
+  unlockModes?.querySelectorAll('.unlock-mode').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      setUnlockMode(btn.dataset.unlockMode);
+      (unlockMode === 'passphrase' ? passphraseInput : masterInput)?.focus();
+    });
+  });
+
+  passphraseInput?.addEventListener('input', () => {
+    const start = passphraseInput.selectionStart;
+    const end = passphraseInput.selectionEnd;
+    const before = passphraseInput.value;
+    const after = formatPassphraseInput(before);
+    if (before === after) return;
+    passphraseInput.value = after;
+    const delta = after.length - before.length;
+    try {
+      passphraseInput.setSelectionRange(Math.max(0, start + delta), Math.max(0, end + delta));
+    } catch { /* ignore */ }
+  });
 
   unlock.addEventListener('submit', async (e) => {
     e.preventDefault();
     const email = emailInput.value.trim();
     const master = masterInput.value;
-    if (!master) {
+    const passphrase = formatPassphraseInput(passphraseInput?.value || '');
+    if (unlockMode === 'passphrase') {
+      if (!passphrase) {
+        setStatus('Passphrase requise.');
+        return;
+      }
+    } else if (!master) {
       setStatus('Mot de passe maître requis.');
       return;
     }
     setStatus('Enregistrement…');
-    const saved = await send(MSG.CONFIRM_CAPTURE, { email, master });
+    const payload = unlockMode === 'passphrase'
+      ? { email, passphrase }
+      : { email, master };
+    const saved = await send(MSG.CONFIRM_CAPTURE, payload);
     if (saved.ok) {
       setStatus('Enregistré dans Clefkey.');
       setTimeout(hideCard, 1200);
     } else {
       setStatus(saved.message || 'Identifiants incorrects.');
-      masterInput.value = '';
-      masterInput.focus();
+      if (unlockMode === 'passphrase') {
+        if (passphraseInput) passphraseInput.value = '';
+        passphraseInput?.focus();
+      } else {
+        masterInput.value = '';
+        masterInput.focus();
+      }
     }
   });
 

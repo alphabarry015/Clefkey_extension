@@ -192,3 +192,27 @@ export async function unlockSession(authResponse, masterPassword, options = {}) 
   if (derived && !options.keepDerived) derived.fill(0);
   return { vaultKey, privateKey, publicKey };
 }
+
+/**
+ * Soft-lock : déverrouille via la passphrase (blob dédié côté serveur).
+ */
+export async function unlockSessionWithPassphrase(authResponse, passphrase) {
+  if (!authResponse?.passphrase_salt || !authResponse?.encrypted_vault_key_passphrase) {
+    throw new Error('Aucune passphrase configurée pour ce compte.');
+  }
+  const salt = fromB64(authResponse.passphrase_salt);
+  const derived = await deriveKey(passphrase, salt);
+  try {
+    const vaultKey = await decryptBytes(
+      fromB64(authResponse.encrypted_vault_key_passphrase),
+      derived,
+    );
+    const privateKey = authResponse.encrypted_private_key
+      ? await decryptBytes(fromB64(authResponse.encrypted_private_key), vaultKey)
+      : null;
+    const publicKey = authResponse.public_key ? fromB64(authResponse.public_key) : null;
+    return { vaultKey, privateKey, publicKey };
+  } finally {
+    derived.fill(0);
+  }
+}

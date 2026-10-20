@@ -109,7 +109,7 @@ Références : `docs/API.md`, `docs/CARTOGRAPHIE-COFFRE.md`, `frontend/js/crypto
 
 ### 5.1 Déverrouillage
 1. L'utilisateur clique sur l'icône de l'extension (ou une capture/autofill est demandée).
-2. Si déverrouillée → accès direct. Sinon → écran « Mot de passe maître ».
+2. Si déverrouillée → accès direct. Sinon → soft-lock : **passphrase ou mot de passe maître** (passphrase créée sur le site à l'inscription).
 3. L'extension demande `GET /auth/salt?email=`, dérive `auth_verifier` (Argon2id),
    appelle `POST /auth/login`, reçoit le JWT, **déchiffre la clé de coffre en local**.
 4. Session active : JWT + clés en mémoire de l'extension (jamais persistées en clair).

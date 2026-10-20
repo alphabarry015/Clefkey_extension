@@ -1,8 +1,8 @@
 /**
  * Génère les icônes PNG de l'extension (16/32/48/128/192/512) en pur Node.
  *
- * Source : src/icons/icon.png (logo Clefkey). Redimensionnement bilinéaire
- * + encodeur PNG (node:zlib), sans dépendance native.
+ * Source : src/icons/icon.png (logo chevalier du site Clefkey).
+ * Redimensionnement bilinéaire + encodeur PNG (node:zlib), sans dépendance native.
  */
 
 import { deflateSync, inflateSync } from 'node:zlib';

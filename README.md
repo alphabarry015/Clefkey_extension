@@ -28,7 +28,7 @@ src/
 ├── popup/                   # Déverrouillage + état de session
 ├── options/                 # Serveur (URL), auto-verrouillage, thème
 ├── vendor/                  # hash-wasm (Argon2id) — vendored, pas de CDN
-└── icons/                   # icon.svg (source) → PNG générés au build
+└── icons/                   # icon.png (logo chevalier du site) → PNG multi-tailles au build
 scripts/
 ├── build.mjs                # Copie src/ → dist/ + manifest selon la cible
 └── icons.mjs                # Rasteriseur PNG pur Node (zéro dépendance native)
@@ -60,7 +60,8 @@ Le `dist/` produit est chargeable directement via **Charger l'extension non empa
 ## Sécurité
 
 - Mot de passe maître **jamais stocké** : seulement en mémoire pendant la dérivation.
-- JWT + `authMaterial` (blobs chiffrés) dans `storage.session` — effacés à la fermeture du navigateur, invisibles aux content scripts.
+- Soft-lock : **passphrase ou mot de passe maître** (même modèle que le site ; 1ʳᵉ connexion = e-mail + maître).
+- JWT + `authMaterial` (blobs chiffrés, y compris wrap passphrase) dans `storage.session` — effacés à la fermeture du navigateur, invisibles aux content scripts.
 - Clés déchiffrées (`vaultKey`…) **mémoire du background uniquement** ; perdues au verrouillage, à l'inactivité (auto-lock, défaut 5 min) ou à la mort du service worker.
 - Dérivation Argon2id m=64 MiB, t=3, p=4 — identique au coffre (interopérable).
 
