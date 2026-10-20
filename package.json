@@ -1,6 +1,6 @@
 {
   "name": "clefkey-extension",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "private": true,
   "description": "Extension navigateur Clefkey — autofill, générateur et capture (client du coffre Clefkey).",
   "type": "module",

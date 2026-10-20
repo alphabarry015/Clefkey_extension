@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Clefkey. Gestionnaire de mots de passe",
   "short_name": "Clefkey",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Remplissez vos identifiants et générez des mots de passe. Vos secrets restent sur votre appareil.",
   "permissions": [
     "storage",
